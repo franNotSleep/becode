@@ -148,12 +148,35 @@ Skill routing is the `description` frontmatter — eve advertises only that, and
 
 ## UI
 
-becode's own web interface uses **beUI** (`@beui`), a shadcn registry of animated React
-components — registered in `components.json`, so `npx shadcn@latest add @beui/<slug>` works.
-There is no `beui` runtime package; components are copied in. Fetch
-<https://beui.dev/r/registry.json> for the live list before picking a component. The `beui` MCP
-server is in local config (`~/.claude.json`), not the repo — a teammate runs `claude mcp add`
-themselves.
+becode's own interface is built from **beUI** (`@beui`), a shadcn registry of animated React
+components — registered in `components.json`, so `npx shadcn@latest add @beui/<slug>` works. There
+is no `beui` runtime package; components are copied into `components/`. Fetch
+<https://beui.dev/r/registry.json> for the live list. The `beui` MCP server is in local config
+(`~/.claude.json`), not the repo — a teammate runs `claude mcp add` themselves.
+
+The eve scaffold's `components/ai-elements/` is **gone**. beUI's agent family replaced it:
+
+| Was | Now |
+| --- | --- |
+| `conversation` | `@/components/agents/message-scroller` |
+| `message` | `@/components/agents/message` |
+| `prompt-input` | `@/components/agents/prompt-input` |
+| `shimmer` | `@/components/agents/loading-states/thinking-shimmer` |
+| `reasoning`, `chain-of-thought` | `@/components/agents/agent-activity` |
+| `tool` | `@/components/agents/tool-result` + `tool-approval` |
+| `question` | `@/components/agents/approval-card` |
+
+Two things that mapping does not cover:
+
+- **Markdown.** beUI's `Message` is a layout primitive with no markdown renderer, so agent text
+  still goes through `streamdown` (a local `Markdown` memo in `agent-message.tsx`).
+- **Attachments.** beUI's `PromptInput` submits `(value, model?)` — no file parts. The scaffold's
+  composer accepted them and `agent.send()` still does. `@beui/attachment-upload` is the way back
+  if pasting a reference image matters.
+
+`components/motion/text-shimmer.tsx` carries a **local fix**: the registry ships it importing its
+own constants from itself, which does not compile. It should come from `@/lib/text-shimmer`.
+Re-running `shadcn add` for anything depending on it will reintroduce the break.
 
 ## Running it
 

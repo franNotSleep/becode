@@ -1,26 +1,16 @@
 "use client";
 
-import type { UserContent } from "ai";
 import { useEveAgent } from "eve/react";
-import { AlertCircleIcon, BrainIcon } from "lucide-react";
+import { AlertCircleIcon } from "lucide-react";
 import { useState } from "react";
-import {
-  Conversation,
-  ConversationContent,
-  ConversationScrollButton,
-} from "@/components/ai-elements/conversation";
-import { Message, MessageContent } from "@/components/ai-elements/message";
-import {
-  PromptInput,
-  type PromptInputMessage,
-  PromptInputSubmit,
-  PromptInputTextarea,
-} from "@/components/ai-elements/prompt-input";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+import { ThinkingShimmer } from "@/components/agents/loading-states/thinking-shimmer";
+import { Message, MessageContent } from "@/components/agents/message";
+import { MessageScroller } from "@/components/agents/message-scroller";
+import { PromptInput } from "@/components/agents/prompt-input";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
 
-const AGENT_NAME = "becode-scaffold";
+const AGENT_NAME = "becode";
 
 export function AgentChat() {
   const [cancellationError, setCancellationError] = useState<string>();
@@ -44,44 +34,26 @@ export function AgentChat() {
     });
   };
 
-  const handleSubmit = async (message: PromptInputMessage) => {
-    const text = message.text.trim();
-    if ((text.length === 0 && message.files.length === 0) || isBusy) return;
-
+  const handleSubmit = async (value: string) => {
+    const text = value.trim();
+    if (text.length === 0 || isBusy) return;
     setCancellationError(undefined);
-
-    if (message.files.length === 0) {
-      await agent.send(text);
-      return;
-    }
-
-    const parts: UserContent = [];
-    if (text.length > 0) {
-      parts.push({ text, type: "text" });
-    }
-    for (const file of message.files) {
-      parts.push({
-        data: file.url,
-        filename: file.filename,
-        mediaType: file.mediaType,
-        type: "file",
-      });
-    }
-
-    await agent.send(parts);
+    await agent.send(text);
   };
 
   const composer = (
-    <PromptInput onSubmit={handleSubmit}>
-      <PromptInputTextarea disabled={isBusy} placeholder="Send a message…" />
-      <PromptInputSubmit onStop={requestCancellation} status={agent.status} />
-    </PromptInput>
+    <PromptInput
+      loading={isBusy}
+      onStop={requestCancellation}
+      onSubmit={handleSubmit}
+      placeholder="What should change?"
+    />
   );
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       {isEmpty ? null : (
-        <header className="flex h-14 shrink-0 items-center justify-center pl-4 pr-2">
+        <header className="flex h-14 shrink-0 items-center justify-center px-4">
           <span className="truncate text-muted-foreground text-sm">{AGENT_NAME}</span>
         </header>
       )}
@@ -102,30 +74,36 @@ export function AgentChat() {
       ) : null}
 
       {isEmpty ? null : (
-        <Conversation className="min-h-0 flex-1">
-          <ConversationContent className="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6">
-            {agent.data.messages.map((message, index) =>
-              showPendingThinking &&
-              isPendingAssistantShell &&
-              message.id === lastMessage.id ? null : (
-                <AgentMessage
-                  canRespond={!isBusy}
-                  isStreaming={
-                    agent.status === "streaming" && index === agent.data.messages.length - 1
-                  }
-                  key={message.id}
-                  message={message}
-                  onInputResponses={(inputResponses) => {
-                    setCancellationError(undefined);
-                    return agent.respond(inputResponses);
-                  }}
-                />
-              ),
-            )}
-            {showPendingThinking ? <PendingThinking /> : null}
-          </ConversationContent>
-          <ConversationScrollButton />
-        </Conversation>
+        <MessageScroller
+          busy={isBusy}
+          className="min-h-0 flex-1"
+          contentClassName="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6"
+          label={`${AGENT_NAME} transcript`}
+        >
+          {agent.data.messages.map((message, index) =>
+            showPendingThinking && isPendingAssistantShell && message.id === lastMessage.id ? null : (
+              <AgentMessage
+                canRespond={!isBusy}
+                isStreaming={
+                  agent.status === "streaming" && index === agent.data.messages.length - 1
+                }
+                key={message.id}
+                message={message}
+                onInputResponses={(inputResponses) => {
+                  setCancellationError(undefined);
+                  return agent.respond(inputResponses);
+                }}
+              />
+            ),
+          )}
+          {showPendingThinking ? (
+            <Message aria-live="polite" from="assistant">
+              <MessageContent>
+                <ThinkingShimmer>Thinking</ThinkingShimmer>
+              </MessageContent>
+            </Message>
+          ) : null}
+        </MessageScroller>
       )}
 
       <div
@@ -139,24 +117,14 @@ export function AgentChat() {
         {isEmpty ? (
           <div className="flex flex-col items-center gap-3 text-center">
             <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
+            <p className="text-balance text-muted-foreground">
+              Describe a change. You will see it running before it becomes a pull request.
+            </p>
           </div>
         ) : null}
         <div className="w-full">{composer}</div>
       </div>
     </main>
-  );
-}
-
-function PendingThinking() {
-  return (
-    <Message aria-live="polite" from="assistant">
-      <MessageContent>
-        <div className="mb-4 flex w-full items-center gap-2 text-muted-foreground text-sm">
-          <BrainIcon className="size-4" />
-          <Shimmer duration={1}>Thinking</Shimmer>
-        </div>
-      </MessageContent>
-    </Message>
   );
 }
 
@@ -176,11 +144,11 @@ function getLatestTurnFailure(
         : event.data.message;
     }
 
-    if (event.type === "turn.completed" || event.type === "turn.cancelled") {
-      return undefined;
-    }
-
-    if (event.type === "message.received") {
+    if (
+      event.type === "turn.completed" ||
+      event.type === "turn.cancelled" ||
+      event.type === "message.received"
+    ) {
       return undefined;
     }
   }
