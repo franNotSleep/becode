@@ -1,5 +1,4 @@
 import path from "node:path";
-import { defineState } from "eve/context";
 import { projects } from "../../becode.projects.ts";
 import type { Project } from "./projects.ts";
 
@@ -12,8 +11,22 @@ export type Task = {
   port: number;
 } | null;
 
-/** The one task this session is working on. Durable, so it survives restarts mid-review. */
-export const task = defineState<Task>("becode.task", () => null);
+let current: Task = null;
+
+/**
+ * The one task this process is working on.
+ *
+ * ponytail: a module singleton, not a store. becode is one local process serving one person, and
+ * one task at a time. If a task ever needs to survive a restart mid-review, apps/tixqa/server/db.ts
+ * is the precedent — node:sqlite, no dependency.
+ */
+export const task = {
+  get: (): Task => current,
+  update: (fn: (previous: Task) => Task): Task => {
+    current = fn(current);
+    return current;
+  },
+};
 
 export function findProject(projectId: string): Project {
   const project = projects.find((p) => p.id === projectId);

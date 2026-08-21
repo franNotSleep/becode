@@ -2,11 +2,11 @@
  * Check a role's plain-English policy against cases you expect it to allow and refuse.
  *
  * The whole design rests on the wording in `roles/<role>.md` being read the way you meant it.
- * Run this after editing one. Needs AI_GATEWAY_API_KEY.
+ * Run this after editing one. Needs CLAUDE_CODE_OAUTH_TOKEN in .env.local.
  *
  *   npm run check:policy
  */
-import { judgeRequest } from "../agent/lib/policy.ts";
+import { judgeRequest } from "../agent/sdk/judge.ts";
 import { rolePolicy } from "../agent/lib/roles.ts";
 
 const CASES: { request: string; expect: boolean }[] = [

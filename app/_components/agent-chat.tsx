@@ -1,50 +1,34 @@
 "use client";
 
-import { useEveAgent } from "eve/react";
 import { AlertCircleIcon } from "lucide-react";
-import { useState } from "react";
 import { ThinkingShimmer } from "@/components/agents/loading-states/thinking-shimmer";
 import { Message, MessageContent } from "@/components/agents/message";
 import { MessageScroller } from "@/components/agents/message-scroller";
 import { PromptInput } from "@/components/agents/prompt-input";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
+import { useBecodeAgent } from "./use-becode-agent";
 
 const AGENT_NAME = "becode";
 
 export function AgentChat() {
-  const [cancellationError, setCancellationError] = useState<string>();
-  const agent = useEveAgent();
+  const agent = useBecodeAgent();
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
-  const isEmpty = agent.data.messages.length === 0;
-  const lastMessage = agent.data.messages.at(-1);
-  const isPendingAssistantShell =
-    lastMessage?.role === "assistant" &&
-    lastMessage.parts.every((part) => part.type === "step-start");
-  const showPendingThinking =
-    isBusy &&
-    (agent.status === "submitted" || lastMessage?.role !== "assistant" || isPendingAssistantShell);
-  const turnFailure = isBusy ? undefined : getLatestTurnFailure(agent.events);
-  const errorMessage = cancellationError ?? agent.error?.message ?? turnFailure;
-
-  const requestCancellation = () => {
-    setCancellationError(undefined);
-    void agent.cancel().catch((error: unknown) => {
-      setCancellationError(toErrorMessage(error));
-    });
-  };
+  const isEmpty = agent.messages.length === 0;
+  const lastMessage = agent.messages.at(-1);
+  const isPendingAssistantShell = lastMessage?.role === "assistant" && lastMessage.parts.length === 0;
+  const showPendingThinking = isBusy && isPendingAssistantShell;
 
   const handleSubmit = async (value: string) => {
     const text = value.trim();
     if (text.length === 0 || isBusy) return;
-    setCancellationError(undefined);
     await agent.send(text);
   };
 
   const composer = (
     <PromptInput
       loading={isBusy}
-      onStop={requestCancellation}
+      onStop={agent.cancel}
       onSubmit={handleSubmit}
       placeholder="What should change?"
     />
@@ -58,7 +42,7 @@ export function AgentChat() {
         </header>
       )}
 
-      {errorMessage ? (
+      {agent.error ? (
         <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-2 sm:px-6">
           <div
             className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm"
@@ -67,7 +51,7 @@ export function AgentChat() {
             <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
             <div>
               <p className="font-medium">Request failed</p>
-              <p className="mt-0.5 text-muted-foreground">{errorMessage}</p>
+              <p className="mt-0.5 text-muted-foreground">{agent.error}</p>
             </div>
           </div>
         </div>
@@ -80,19 +64,13 @@ export function AgentChat() {
           contentClassName="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6"
           label={`${AGENT_NAME} transcript`}
         >
-          {agent.data.messages.map((message, index) =>
-            showPendingThinking && isPendingAssistantShell && message.id === lastMessage.id ? null : (
+          {agent.messages.map((message) =>
+            showPendingThinking && message.id === lastMessage?.id ? null : (
               <AgentMessage
-                canRespond={!isBusy}
-                isStreaming={
-                  agent.status === "streaming" && index === agent.data.messages.length - 1
-                }
+                canRespond={!isBusy || agent.status === "streaming"}
                 key={message.id}
                 message={message}
-                onInputResponses={(inputResponses) => {
-                  setCancellationError(undefined);
-                  return agent.respond(inputResponses);
-                }}
+                onRespond={agent.respond}
               />
             ),
           )}
@@ -126,32 +104,4 @@ export function AgentChat() {
       </div>
     </main>
   );
-}
-
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unable to cancel the response.";
-}
-
-function getLatestTurnFailure(
-  events: ReturnType<typeof useEveAgent>["events"],
-): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-
-    if (event.type === "turn.failed") {
-      return event.data.code === "MODEL_CALL_FAILED"
-        ? "The model is temporarily unavailable. Please try again."
-        : event.data.message;
-    }
-
-    if (
-      event.type === "turn.completed" ||
-      event.type === "turn.cancelled" ||
-      event.type === "message.received"
-    ) {
-      return undefined;
-    }
-  }
-
-  return undefined;
 }

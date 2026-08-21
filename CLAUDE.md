@@ -26,9 +26,7 @@ These are the point of the project. Do not relax them for convenience.
 - **No production writes, ever.** The agent's only output path to a target repo is a pull request
   against a non-default branch. No `git push` to `main`/`production`, no deploys, no force-push.
 - **The role policy binds.** One instance, one role, one plain-English policy in `roles/`. Enforce
-  it at the tool layer (deny the call), never in the prompt — prompts are not a boundary. eve's own
-  docs say the same: "Do not rely on model behavior alone to prevent sensitive or irreversible
-  actions."
+  it at the tool layer (deny the call), never in the prompt — prompts are not a boundary.
 - **Design system is input, not invention.** Before changing UI, the agent reads the target repo's
   design system (tokens, theme config, component library) and works from it. New one-off colors,
   spacings, or components are a bug.
@@ -39,69 +37,72 @@ These are the point of the project. Do not relax them for convenience.
 
 ## Stack
 
-**One Next.js project, one dev server.** `next.config.ts` wraps the config in `withEve()`, so
-`npm run dev` boots the eve dev server alongside `next dev` and rewrites the eve routes to it. The
-browser only ever talks to the Next.js origin — no CORS, no URL env vars. There is no separate
-API server, and adding one (NestJS, Express) would be a second process for nothing: custom HTTP
-belongs in Next.js route handlers, and agent capability belongs in `agent/tools/`.
+**One Next.js project, one process.** The agent runs inside a route handler (`app/api/agent/`)
+and streams NDJSON back to the browser. There is no second server: custom HTTP belongs in route
+handlers, and agent capability belongs in `agent/sdk/tools.ts`. `apps/tixqa` in the tixdo/web
+monorepo is the same architecture on Express — a useful reference, not a template.
 
 - Next.js 16 (preview) · React 19 · Tailwind 4 · shadcn/ui in `components/ui/`
-- eve 0.44 — filesystem-first agent framework by **Anthropic**, Apache-2.0. It integrates with
-  Vercel (Sandbox, Connect, Chat SDK, `eve deploy`) but is not a Vercel framework.
-- Node 24 (`.nvmrc`; `nvm use` before anything). No Docker needed — see Running it.
-- Model: `anthropic/claude-opus-5` in `agent/agent.ts`, routed via AI Gateway.
+- `@anthropic-ai/claude-agent-sdk` — Claude Code as a library. It supplies the agent loop, context
+  management, and host-native built-in tools; you supply the harness and host it yourself.
+- Node 24 (`.nvmrc`; `nvm use` before anything). No Docker, no sandbox, no container.
+- **Auth is your Claude subscription**, not an API key: `claude setup-token` mints a
+  `CLAUDE_CODE_OAUTH_TOKEN` that covers both the agent and the judge.
 
 ## Layout
 
-eve derives names from file paths — a file's location *is* its registration. There is no separate
-config to update when adding a tool, skill, or subagent. When something "isn't being picked up",
-run `eve info` before debugging anything else.
+Tools are registered explicitly in `agent/sdk/tools.ts`. Skills are the exception — `agent/` is
+loaded as a local **plugin**, so anything under `agent/skills/<name>/SKILL.md` is auto-discovered
+and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `plugins` and
+`skills` lists on the init message before debugging anything else.
 
 | Concern | Where |
 | --- | --- |
 | **Role policies, in plain English (the thing you edit)** | `roles/<role>.md` |
 | **Which role this instance runs as** | `becode.config.ts` |
 | Policy check harness | `roles/check.ts` (`npm run check:policy`) |
-| The judge | `agent/lib/policy.ts`, `agent/lib/roles.ts` |
+| The judge | `agent/sdk/judge.ts`, `agent/lib/roles.ts` |
 | Target repos and how to boot them | `becode.projects.ts`, `agent/lib/projects.ts` |
 | Active task, worktree path boundary | `agent/lib/task.ts` |
 | git worktree / diff helpers | `agent/lib/git.ts` |
-| Agent capabilities | `agent/tools/*.ts` — filename becomes the model-facing tool name |
+| becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
+| **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Always-on system prompt | `agent/instructions.md` |
-| Model / reasoning / limits | `agent/agent.ts` |
-| HTTP session API + auth | `agent/channels/eve.ts` |
-| CEO-facing UI | `app/` (`app/_components/agent-chat.tsx` uses `useEveAgent`) |
-| Build output / manifests (generated) | `.eve/`, `.output/` |
+| HTTP surface | `app/api/agent/route.ts`, `app/api/agent/approve/route.ts` |
+| CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
 
 ## How the constraint works
 
 One becode instance runs for **one person in one role**. `becode.config.ts` names the role;
 `roles/<role>.md` is that role's policy, written in plain English by whoever installs it. Nothing
 about the policy is structured — no globs, no path lists — and the agent doing the work never
-gets to interpret it. A separate small model (`anthropic/claude-haiku-4.5`, set in
-`becode.config.ts`) rules on each case against the policy text, defaulting to refusal when unsure.
+gets to interpret it. A separate small model (`haiku`, set in `becode.config.ts`) rules on each
+case against the policy text, defaulting to refusal when unsure — including when its own reply is
+unparseable (`parseVerdict` in `agent/sdk/judge.ts`).
 
-The target repo lives on **this machine**, not in the eve sandbox — the sandbox is an isolated
-Docker container that cannot see local checkouts. So becode's tools run in the app runtime against
-the host filesystem, and `bash`, `read_file`, and `write_file` are **disabled** via `disableTool()`
-(`agent/tools/bash.ts` etc.). Leaving a sandbox shell in place would be useless here and would be
-a way around the judge. `eve info`'s compiled manifest shows `disabledFrameworkTools`.
+The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
+checkout, rooted at the task worktree via `cwd`. `Bash` is removed outright with
+`disallowedTools`, which strips the tool definition from the request — the model never sees it. So
+is `Task`, so there are no subagents with their own permission surface to reason about.
 
-Three gates, all reading the same policy file:
+All three gates live in **one `canUseTool` callback** (`agent/sdk/session.ts`):
 
 1. `start_task` — judges **the request**, before any work starts. Fast, honest refusal.
-2. `edit_project_file` — judges **each edit** (path + a required one-line `intent`) in an eve
-   `approval` policy. Returning `{type:"denied"}` means eve never runs `execute`; the model gets
-   the reason instead of the write.
-3. `open_pull_request` — judges **the actual diff** against the original request. This is the one
-   that binds: it reads what changed on disk, not what anyone claimed. Passing it still requires
-   human confirmation (`"user-approval"`).
+2. `Edit` / `Write` — judges **the actual change**: the path, plus the before/after text, before
+   anything reaches disk. A `{behavior:"deny"}` means the write never happens and the model gets
+   the reason instead.
+3. `open_pull_request` — judges **the real diff** against the original request, then blocks on a
+   person. `canUseTool` is async, so human confirmation is just an awaited promise resolved by
+   `app/api/agent/approve/`.
 
-Gates 1 and 2 depend on the working agent describing things honestly, so they are UX and early
-warning, not a boundary. Gate 3 is the boundary — nothing leaves the machine without it, and the
-worktree is disposable if it fails.
+Gate 1 still depends on the agent restating the request honestly. Gates 2 and 3 do not: both read
+what is actually about to happen. Gate 3 is the boundary — nothing leaves the machine without it,
+and the worktree is disposable if it fails.
 
-Hooks are **not** an option for this: eve hooks are explicitly observe-only and cannot block a turn.
+**Do not add `allowedTools` or a `permissionMode`.** Auto-approved tools never reach `canUseTool`,
+so either one would silently bypass the policy for the tools it covers. Narrow the surface with
+`disallowedTools` only. If that ever changes, move the judge to a `PreToolUse` hook: hooks run
+before every other step and a hook deny holds even under `bypassPermissions`.
 
 ## Skills
 
@@ -123,7 +124,9 @@ interface is product UI. It *is* in `agent/skills/`, where target-repo marketing
 squarely inside its scope. Still available to Claude Code at user level.
 
 **`agent/skills/`** — loaded on demand by the becode agent at runtime, when it works on a *target*
-repo. `eve info` should show 4:
+repo. They reach it through the plugin at `agent/` (`agent/.claude-plugin/plugin.json`), because
+the agent's `cwd` is the target worktree and a project-local `.claude/` would be the wrong repo's.
+There are 4:
 
 | Skill | For |
 | --- | --- |
@@ -133,8 +136,8 @@ repo. `eve info` should show 4:
 | `redesign-existing-projects` | Audit-first, framework-agnostic |
 
 One caveat on `design-taste-frontend` here: parts of it assume a shell (`npx shadcn@latest add`)
-and image generation. becode has neither — `bash` is disabled and it edits through
-`edit_project_file`. It can still author component files by hand; it cannot run the installer.
+and image generation. becode has neither — `Bash` is removed from the tool surface entirely. It
+can still author component files by hand; it cannot run the installer.
 
 `design-system-first` exists because the off-the-shelf skills actively conflict with the brief
 inside someone else's codebase — they say things like "replace the font with one that has
@@ -143,8 +146,8 @@ wrong for a marketing manager's "make the headline bigger." It establishes the p
 system wins, general taste applies only where the project has not decided) and carves out the one
 exception: accessibility defects get fixed. `agent/instructions.md` requires loading it first.
 
-Skill routing is the `description` frontmatter — eve advertises only that, and the model calls
-`load_skill` off it. Write descriptions as "when to use this," not "what this is."
+Skill routing is the `description` frontmatter — that is all the model sees until it opens one.
+Write descriptions as "when to use this," not "what this is."
 
 ## UI
 
@@ -154,7 +157,7 @@ is no `beui` runtime package; components are copied into `components/`. Fetch
 <https://beui.dev/r/registry.json> for the live list. The `beui` MCP server is in local config
 (`~/.claude.json`), not the repo — a teammate runs `claude mcp add` themselves.
 
-The eve scaffold's `components/ai-elements/` is **gone**. beUI's agent family replaced it:
+The original scaffold's `components/ai-elements/` is **gone**. beUI's agent family replaced it:
 
 | Was | Now |
 | --- | --- |
@@ -164,15 +167,16 @@ The eve scaffold's `components/ai-elements/` is **gone**. beUI's agent family re
 | `shimmer` | `@/components/agents/loading-states/thinking-shimmer` |
 | `reasoning`, `chain-of-thought` | `@/components/agents/agent-activity` |
 | `tool` | `@/components/agents/tool-result` + `tool-approval` |
-| `question` | `@/components/agents/approval-card` |
 
-Two things that mapping does not cover:
+Two notes:
 
 - **Markdown.** beUI's `Message` is a layout primitive with no markdown renderer, so agent text
   still goes through `streamdown` (a local `Markdown` memo in `agent-message.tsx`).
-- **Attachments.** beUI's `PromptInput` submits `(value, model?)` — no file parts. The scaffold's
-  composer accepted them and `agent.send()` still does. `@beui/attachment-upload` is the way back
-  if pasting a reference image matters.
+- **Attachments.** beUI's `PromptInput` submits `(value, model?)` — no file parts, and `send()`
+  takes text only. `@beui/attachment-upload` is the way back if pasting a reference image matters.
+- **`approval-card` is unused.** It rendered eve's `ask_question`; `AskUserQuestion` is in
+  `disallowedTools` because in a chat the agent can simply ask in a message. `tool-approval` is
+  what gate 3 renders.
 
 `components/motion/text-shimmer.tsx` carries a **local fix**: the registry ships it importing its
 own constants from itself, which does not compile. It should come from `@/lib/text-shimmer`.
@@ -181,74 +185,69 @@ Re-running `shadcn add` for anything depending on it will reintroduce the break.
 ## Running it
 
 ```bash
-nvm use                      # Node 24 — .nvmrc; will not build on 22
-cp .env.example .env.local   # then paste an AI_GATEWAY_API_KEY
+nvm use                      # Node 24 — .nvmrc; the SDK requires >=24
+claude setup-token           # mints a long-lived subscription token
+cp .env.example .env.local   # then paste it as CLAUDE_CODE_OAUTH_TOKEN
 npm install                  # first time only
 npm run dev                  # http://localhost:3000
 ```
 
-`npm run dev` is the whole app: Next.js serves the UI and proxies `/eve/v1/*` to the eve dev
-server it boots alongside on a random loopback port. Verify with
-`curl localhost:3000/eve/v1/health`.
+`npm run dev` is the whole app: Next.js serves the UI, and `POST /api/agent` runs the agent in a
+Node route handler, streaming NDJSON back. There is no second process and no daemon.
 
-Without a credential everything starts and routes fine — sessions are created, the stream opens —
-and the first model call fails with `MODEL_CALL_FAILED / gateway-auth-missing-credentials`. If
-the UI looks alive but nothing answers, that is the reason.
+Without a credential the UI loads and the first message comes back as a plain error naming the
+fix — `hasAuth()` in `agent/sdk/session.ts` checks before anything else runs. `ANTHROPIC_API_KEY`
+works too if you would rather be billed per token.
 
-Docker is not needed, and `agent/sandbox.ts` pins `justbash()` so eve never goes looking for it.
-Left unpinned, `defaultBackend()` resolves by probing — it runs `docker version` on every boot, and
-on a Mac with a `credsStore` in `~/.docker/config.json` that makes the docker CLI call
-`docker-credential-osxkeychain`, which pops a keychain password prompt every `npm run dev`. becode
-never creates a sandbox at all (nothing calls `getSandbox()` now that the sandbox-targeting
-built-ins are disabled), so the probe was for a container runtime it would never use. eve installs
-`just-bash` itself the first time it sees the pinned backend — that devDependency is expected.
+No Docker, no container, no keychain prompt. becode edits a local checkout with host-native tools;
+there is nothing to virtualize.
 
 ## Commands
 
 ```bash
 npm run typecheck            # tsc --noEmit
-npm run check:policy         # run the role policy against known allow/refuse cases
+npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
 npm run build                # next build
-npx eve info                 # resolved config + discovery diagnostics
-npx eve dev                  # agent-only terminal REPL (no Next.js UI)
-npx eve dev --no-ui          # headless — use this for scripted verification
-npx eve invoke "<prompt>"    # one turn, no TUI; --json-schema for structured output
-npx eve eval                 # run evals/  (--list, --tag, --strict for CI)
-npx eve logs ls              # dev-session diagnostic logs; `eve logs <id>` to read
-npx eve registry search <q>  # look for an existing integration before writing one
+npm run dev                  # the app
+claude setup-token           # re-mint the subscription token when it expires
 ```
 
-`eve dev` opens an interactive REPL — never launch the bare command as a background process.
+`check:policy` is the cheapest end-to-end signal in the repo: it exercises the token, the judge,
+and the role policy in one command without touching the UI. Run it before debugging anything else.
 
 `next dev` rewrites `AGENTS.md` and `next-env.d.ts` on every run; commit the churn rather than
 fighting it. Next.js 16 is a preview with breaking changes — its own generated note points at
 `node_modules/next/dist/docs/` rather than training data.
 
-## eve facts this design leans on
+## Agent SDK facts this design leans on
 
-Verified against the docs. **Read `node_modules/eve/docs/` first** — it ships with the installed
-package and matches its version exactly. `docs/README.md` maps each task to its page. Fall back to
-<https://eve.dev/docs> only if the package docs are missing. eve is in preview and its API moves;
-do not infer eve APIs from other agent frameworks, and say plainly when the docs don't settle it.
+Verified against <https://code.claude.com/docs/en/agent-sdk> and the installed
+`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`. When the docs and the `.d.ts` disagree,
+the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 
-- **Hooks are observe-only** and cannot block a turn. The `approval` policy is the blocking
-  primitive — it is async, sees `toolInput`, and can return `{type:"denied", reason}`.
-- **The sandbox** is an isolated container rooted at `/workspace`; it cannot see local checkouts.
-  `sandbox.spawn()` would keep a process alive across turns if we ever used it.
-- **`ask_question`** (built-in) is how to get a decision mid-task instead of guessing.
-- **Skills** load on demand off their `description` frontmatter alone. Static markdown returns
-  instructions directly — no sandbox involved.
-- **Declared subagents inherit nothing** from the root's authored slots and get their own sandbox.
-  Multiple built-in `agent` calls in one response run concurrently, so parallel workers need
-  non-overlapping write scopes — which one-worktree-per-task provides.
+- **Auto-approved tools never reach `canUseTool`.** This is the single most important fact here —
+  see the warning under How the constraint works.
+- **`disallowedTools: ["Bash"]`** removes the tool definition entirely; a scoped rule like
+  `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode.
+- **`canUseTool` is async** and receives `toolUseID`, which is what makes an awaited human
+  approval possible without inventing a protocol.
+- **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Not
+  used today — `canUseTool` is authoritative while no allow rules exist — but it is the upgrade
+  path if that ever stops being true.
+- **Plugins load by local path** (`{type:"local", path}`) and the manifest is optional; skills are
+  auto-discovered from `<plugin>/skills/<name>/SKILL.md` and namespaced `<plugin>:<skill>`.
+- **`resume`** continues a session by id; the id arrives on the `system` init message.
+- **The SDK bundles a native Claude Code binary** per platform as an optional dependency.
+  `npm ci --omit=optional` would skip it and leave the SDK with nothing to run.
 
 ## Open decisions
 
-- **Auth.** `agent/channels/eve.ts` still ships `placeholderAuth()`, which blocks browser requests
-  in production. Fine for localhost; must be replaced before this is reachable by anyone else.
-- **Real project config.** `becode.projects.ts` has a guessed repo path. Point it at the real
-  checkout.
-- **Judge cost/latency.** Every edit costs a Haiku call. If that drags, cache verdicts per
-  (path, intent) within a session, or drop gate 2 and rely on gates 1 and 3.
-- **Parallel tasks.** One task per session (`start_task` refuses a second). Concurrency comes from
-  separate sessions, each with its own worktree and an offset port.
+- **Auth for the browser.** `POST /api/agent` is unauthenticated — anyone who can reach the port
+  can drive the agent. Fine on localhost; must be fixed before it is reachable by anyone else.
+- **Token expiry.** `CLAUDE_CODE_OAUTH_TOKEN` is long-lived, not eternal. `hasAuth()` catches
+  absence; expiry surfaces as a run-time error from the SDK. Re-run `claude setup-token`.
+- **Judge latency.** Every edit costs a judge call. If it drags, cache verdicts per (path, change)
+  within a task, or drop gate 2 and rely on gates 1 and 3 — gate 3 is the boundary either way.
+- **Parallel tasks.** One task per process (`start_task` refuses a second), held in a module
+  singleton in `agent/lib/task.ts`. Two concurrent tasks would need per-session state and a
+  worktree each; `apps/tixqa/server/db.ts` is the precedent if it comes to that.

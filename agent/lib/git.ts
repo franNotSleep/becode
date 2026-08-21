@@ -60,5 +60,8 @@ export async function changedFiles(dir: string): Promise<string[]> {
 
 export async function diff(dir: string): Promise<string> {
   await git(dir, "add", "-A");
-  return git(dir, "diff", "--cached", "--stat");
+  // Content, not just names: gate 3 judges what actually changed, and a --stat summary cannot
+  // show that a "spacing tweak" edited a number. Capped so a large change still fits a prompt.
+  const out = await git(dir, "diff", "--cached", "-U2");
+  return out.length > 60_000 ? `${out.slice(0, 60_000)}\n\n[diff truncated]` : out;
 }

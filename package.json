@@ -14,9 +14,10 @@
     "build:eve": "eve build",
     "dev:eve": "eve dev",
     "start:eve": "eve start",
-    "check:policy": "node --experimental-strip-types roles/check.ts"
+    "check:policy": "node --experimental-strip-types --env-file-if-exists=.env.local roles/check.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.239",
     "@radix-ui/react-use-controllable-state": "1.2.2",
     "@shikijs/core": "4.1.0",
     "@shikijs/engine-javascript": "4.1.0",
@@ -26,12 +27,9 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/postcss": "4.3.0",
-    "@vercel/connect": "0.4.3",
-    "ai": "^7.0.58",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
-    "eve": "^0.44.0",
     "lucide-react": "1.16.0",
     "motion": "12.40.0",
     "nanoid": "5.1.11",
@@ -50,7 +48,6 @@
     "@types/node": "24.x",
     "@types/react": "19.2.15",
     "@types/react-dom": "19.2.3",
-    "just-bash": "^3.4.1",
     "typescript": "6.0.3"
   },
   "engines": {

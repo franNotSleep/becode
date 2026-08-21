@@ -1,60 +1,45 @@
-# eve Agent App
+# becode
 
-This project uses the eve framework: an agent is a directory of files under `agent/`, and eve compiles and runs it.
+An agent built on the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) inside a Next.js app.
+Read `CLAUDE.md` first — it carries the invariants, the layout, and the one fact you must not get
+wrong about permissions.
 
-For a content-only change to the root agent's identity, purpose, tone, or response guidelines, edit its existing authored instructions. Fresh projects use `agent/instructions.md`; a project may instead use `agent/instructions.ts` or files under `agent/instructions/`. You do not need to read the framework docs for a content-only instructions change. A fresh project already has its selected model in `agent/agent.ts`; preserve that file unless the user asks to change the model.
+## Read the docs before writing SDK code
 
-## Read the docs before writing code
+The installed types are what actually ships:
 
 ```sh
-ls node_modules/eve/docs
+node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts        # Options, CanUseTool, PermissionResult
+node_modules/@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts  # built-in tool input shapes
 ```
 
-Start with `docs/README.md`: it maps each task to the page that covers it. Read that page before authoring tools, connections, channels, skills, subagents, schedules, or deployment. In a workspace or local package install, resolve the installed `eve` package location first. If the package docs are missing, use https://eve.dev/docs.
+Prose docs are at <https://code.claude.com/docs/en/agent-sdk> — start from
+`/typescript` (API reference) and `/permissions` (the evaluation order). When the docs and the
+`.d.ts` disagree, the `.d.ts` wins. Do not infer this API from other agent frameworks, and say
+plainly when neither settles it.
 
 Use a bounded authoring loop:
 
-1. Read the relevant page and inspect only files you will modify or need to imitate.
-2. Stop discovery once the file location, imports, and definition shape are clear. Implement the smallest complete behavior the user requested.
-3. Run one narrow verification. Expand investigation only when it fails or the request needs project-specific details.
+1. Read the relevant type or page and inspect only files you will modify or need to imitate.
+2. Stop discovery once the shape is clear. Implement the smallest complete behavior requested.
+3. Run one narrow verification. Expand only when it fails.
 
-Follow links or inspect public types only when the routed page leaves the task unanswered. Do not recursively glob `node_modules`, enumerate the entire docs tree, or read unrelated scaffold files when the direct path is known. Package-manager links can hide files from recursive glob tools even though direct reads work.
+## Where things go
 
-## Prefer an existing integration
-
-When a task names an external product or service, search the registry before implementing its integration. For a generic capability, author a tool instead.
-
-```sh
-eve registry search <query> --json
-eve registry view <item>
-```
-
-Prefer items whose `implementation` is `native`; use Chat SDK adapters when no native channel fits. `registry view` links the item's documentation.
-
-Install without driving interactive prompts:
-
-```sh
-eve add <item> --non-interactive
-```
-
-Exit code 0 means setup completed, 1 failed, and 2 needs an answer or a prerequisite. On exit 2, run the `next.command` from the final NDJSON event. For a non-secret question, replace its `<JSON value>` answer placeholder with the answer you collected; string values need JSON quotes. Never pass a secret in `--answer`. See `docs/install-integrations.mdx` for setup prerequisites.
-
-## Use eve for Vercel operations
-
-Use eve to link and deploy Vercel projects:
-
-```sh
-eve link --non-interactive --project <name-or-id> [--team <team-id-or-slug>]
-eve deploy --non-interactive --yes [--project <name-or-id>]
-```
-
-A setup may report `eve link` as a prerequisite; run it, then retry the continuation. When a completed setup event has `deploymentRequired: true`, run the `next` command it reports.
+- **A new agent capability** → a `tool()` in `agent/sdk/tools.ts`, added to `becodeTools`. It runs
+  in-process against the host filesystem; there is no sandbox.
+- **A new policy rule** → `roles/<role>.md`, in plain English. Never in a prompt, never in code.
+- **Anything touching what the agent may do** → `canUseTool` in `agent/sdk/session.ts`, and read
+  the permissions warning in CLAUDE.md before you touch it.
+- **A new skill for the target repo** → `agent/skills/<name>/SKILL.md`. Auto-discovered.
+- **Custom HTTP** → a Next.js route handler. Do not add a second server.
 
 ## Validate the change
 
-Run the validation the task requests. When it does not establish the behavior you changed, run the narrowest relevant check.
+`npm run check:policy` is the cheapest end-to-end check — token, judge, and role policy in one
+command, with ten known allow/refuse cases. Then `npm run typecheck`. Run the narrowest check that
+actually exercises what you changed.
 
-<!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.

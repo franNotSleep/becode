@@ -10,5 +10,5 @@ export const config = {
   role: "marketing",
 
   /** The model that judges requests and changes against the role policy. Small and fast on purpose. */
-  judgeModel: "anthropic/claude-haiku-4.5",
+  judgeModel: "haiku",
 } as const;
