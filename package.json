@@ -1,5 +1,5 @@
 {
-  "name": "becode-scaffold",
+  "name": "becode",
   "version": "0.0.0",
   "type": "module",
   "imports": {
@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:eve": "eve build",
     "dev:eve": "eve dev",
-    "start:eve": "eve start"
+    "start:eve": "eve start",
+    "check:policy": "node --experimental-strip-types roles/check.ts"
   },
   "dependencies": {
     "@vercel/connect": "0.4.3",
