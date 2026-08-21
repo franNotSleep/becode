@@ -15,7 +15,7 @@ The loop it exists to serve:
 1. CEO describes a change ("make the ticket card less cramped").
 2. Agent checks out the target repo into an isolated worktree.
 3. Agent boots that project's dev server + its dependencies (db, queues, whatever the repo needs).
-4. Agent makes the change, within the allowed change category.
+4. Agent makes the change, within what the role policy allows.
 5. CEO looks at the running app and says yes or no.
 6. On yes → a PR. Never a direct push to a deploy branch.
 
@@ -25,10 +25,10 @@ These are the point of the project. Do not relax them for convenience.
 
 - **No production writes, ever.** The agent's only output path to a target repo is a pull request
   against a non-default branch. No `git push` to `main`/`production`, no deploys, no force-push.
-- **Scoped change category.** Every task carries a change category, and edits outside it are
-  refused rather than silently attempted. Enforce this at the tool layer (reject the write), not
-  in the prompt — prompts are not a boundary. eve's own docs say the same thing: "Do not rely on
-  model behavior alone to prevent sensitive or irreversible actions."
+- **The role policy binds.** One instance, one role, one plain-English policy in `roles/`. Enforce
+  it at the tool layer (deny the call), never in the prompt — prompts are not a boundary. eve's own
+  docs say the same: "Do not rely on model behavior alone to prevent sensitive or irreversible
+  actions."
 - **Design system is input, not invention.** Before changing UI, the agent reads the target repo's
   design system (tokens, theme config, component library) and works from it. New one-off colors,
   spacings, or components are a bug.
@@ -48,7 +48,7 @@ belongs in Next.js route handlers, and agent capability belongs in `agent/tools/
 - Next.js 16 (preview) · React 19 · Tailwind 4 · shadcn/ui in `components/ui/`
 - eve 0.44 — filesystem-first agent framework by **Anthropic**, Apache-2.0. It integrates with
   Vercel (Sandbox, Connect, Chat SDK, `eve deploy`) but is not a Vercel framework.
-- Node 24 (`.nvmrc`; `nvm use` before anything). Docker for the sandbox backend.
+- Node 24 (`.nvmrc`; `nvm use` before anything). No Docker needed — see Running it.
 - Model: `anthropic/claude-opus-5` in `agent/agent.ts`, routed via AI Gateway.
 
 ## Layout
@@ -123,7 +123,7 @@ interface is product UI. It *is* in `agent/skills/`, where target-repo marketing
 squarely inside its scope. Still available to Claude Code at user level.
 
 **`agent/skills/`** — loaded on demand by the becode agent at runtime, when it works on a *target*
-repo. `eve info` should show 3:
+repo. `eve info` should show 4:
 
 | Skill | For |
 | --- | --- |
@@ -154,6 +154,65 @@ There is no `beui` runtime package; components are copied in. Fetch
 <https://beui.dev/r/registry.json> for the live list before picking a component. The `beui` MCP
 server is in local config (`~/.claude.json`), not the repo — a teammate runs `claude mcp add`
 themselves.
+
+## Running it
+
+```bash
+nvm use                      # Node 24 — .nvmrc; will not build on 22
+cp .env.example .env.local   # then paste an AI_GATEWAY_API_KEY
+npm install                  # first time only
+npm run dev                  # http://localhost:3000
+```
+
+`npm run dev` is the whole app: Next.js serves the UI and proxies `/eve/v1/*` to the eve dev
+server it boots alongside on a random loopback port. Verify with
+`curl localhost:3000/eve/v1/health`.
+
+Without a credential everything starts and routes fine — sessions are created, the stream opens —
+and the first model call fails with `MODEL_CALL_FAILED / gateway-auth-missing-credentials`. If
+the UI looks alive but nothing answers, that is the reason.
+
+Docker is not needed. The sandbox backend would want it, but no code path calls `getSandbox()`
+now that the sandbox-targeting built-ins are disabled.
+
+## Commands
+
+```bash
+npm run typecheck            # tsc --noEmit
+npm run check:policy         # run the role policy against known allow/refuse cases
+npm run build                # next build
+npx eve info                 # resolved config + discovery diagnostics
+npx eve dev                  # agent-only terminal REPL (no Next.js UI)
+npx eve dev --no-ui          # headless — use this for scripted verification
+npx eve invoke "<prompt>"    # one turn, no TUI; --json-schema for structured output
+npx eve eval                 # run evals/  (--list, --tag, --strict for CI)
+npx eve logs ls              # dev-session diagnostic logs; `eve logs <id>` to read
+npx eve registry search <q>  # look for an existing integration before writing one
+```
+
+`eve dev` opens an interactive REPL — never launch the bare command as a background process.
+
+`next dev` rewrites `AGENTS.md` and `next-env.d.ts` on every run; commit the churn rather than
+fighting it. Next.js 16 is a preview with breaking changes — its own generated note points at
+`node_modules/next/dist/docs/` rather than training data.
+
+## eve facts this design leans on
+
+Verified against the docs. **Read `node_modules/eve/docs/` first** — it ships with the installed
+package and matches its version exactly. `docs/README.md` maps each task to its page. Fall back to
+<https://eve.dev/docs> only if the package docs are missing. eve is in preview and its API moves;
+do not infer eve APIs from other agent frameworks, and say plainly when the docs don't settle it.
+
+- **Hooks are observe-only** and cannot block a turn. The `approval` policy is the blocking
+  primitive — it is async, sees `toolInput`, and can return `{type:"denied", reason}`.
+- **The sandbox** is an isolated container rooted at `/workspace`; it cannot see local checkouts.
+  `sandbox.spawn()` would keep a process alive across turns if we ever used it.
+- **`ask_question`** (built-in) is how to get a decision mid-task instead of guessing.
+- **Skills** load on demand off their `description` frontmatter alone. Static markdown returns
+  instructions directly — no sandbox involved.
+- **Declared subagents inherit nothing** from the root's authored slots and get their own sandbox.
+  Multiple built-in `agent` calls in one response run concurrently, so parallel workers need
+  non-overlapping write scopes — which one-worktree-per-task provides.
 
 ## Open decisions
 
