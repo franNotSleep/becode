@@ -117,9 +117,10 @@ Two sets, different audiences. Both are committed, so a clone gets them.
 | `minimalist-ui` | Editorial/utilitarian direction |
 | `improve-codebase-architecture` | Structural refactoring |
 
-`design-taste-frontend` is deliberately **not** here: it self-scopes to "landing pages,
-portfolios, and redesigns — not dashboards, not data tables, not multi-step product UI," and
-becode's interface is product UI. It stays available at user level.
+`design-taste-frontend` is **not** here: it self-scopes to "landing pages, portfolios, and
+redesigns — not dashboards, not data tables, not multi-step product UI," and becode's own
+interface is product UI. It *is* in `agent/skills/`, where target-repo marketing pages fall
+squarely inside its scope. Still available to Claude Code at user level.
 
 **`agent/skills/`** — loaded on demand by the becode agent at runtime, when it works on a *target*
 repo. `eve info` should show 3:
@@ -127,10 +128,15 @@ repo. `eve info` should show 3:
 | Skill | For |
 | --- | --- |
 | `design-system-first` | **becode-authored.** Read the target's design system, reuse before inventing, change only what was asked |
+| `design-taste-frontend` | Landing pages, portfolios, marketing surfaces — the marketing role's actual territory |
 | `high-end-visual-design` | Craft standards |
 | `redesign-existing-projects` | Audit-first, framework-agnostic |
 
-`design-system-first` exists because the two off-the-shelf skills actively conflict with the brief
+One caveat on `design-taste-frontend` here: parts of it assume a shell (`npx shadcn@latest add`)
+and image generation. becode has neither — `bash` is disabled and it edits through
+`edit_project_file`. It can still author component files by hand; it cannot run the installer.
+
+`design-system-first` exists because the off-the-shelf skills actively conflict with the brief
 inside someone else's codebase — they say things like "replace the font with one that has
 character" and "pick one accent colour, remove the rest." That is right for a greenfield page and
 wrong for a marketing manager's "make the headline bigger." It establishes the precedence (project
