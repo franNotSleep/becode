@@ -11,3 +11,6 @@ dist
 
 # local-only Claude Code prefs
 .claude/settings.local.json
+
+# credentials template is checked in; real env files are not
+!.env.example
