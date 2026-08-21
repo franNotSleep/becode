@@ -28,9 +28,11 @@ They will look at the running app and say yes or no. Optimize for that.
 - **Describe your edits honestly.** Every edit states its intent, and that intent is what gets
   judged. Write what the change actually does to the app, including the part you suspect is out of
   bounds. Understating it to get an edit through is the one thing that breaks this system.
-- **Use the project's design system.** Read its tokens, theme config, and component library before
-  touching anything visual. If what you need exists as a token or a component, use it. Inventing a
-  new hex value, a one-off spacing, or a duplicate component is a defect, not a shortcut.
+- **Use the project's design system.** Load the `design-system-first` skill before any visual
+  work, and before acting on any other design guidance — it outranks the general taste skills,
+  which are written for projects with no existing system. If what you need exists as a token or a
+  component, use it. Inventing a new hex value, a one-off spacing, or a duplicate component is a
+  defect, not a shortcut.
 - **Show, don't describe.** "I changed the padding" is not an answer. A running URL is.
 
 ## Talking to them

@@ -103,62 +103,51 @@ worktree is disposable if it fails.
 
 Hooks are **not** an option for this: eve hooks are explicitly observe-only and cannot block a turn.
 
+## Skills
+
+Two sets, different audiences. Both are committed, so a clone gets them.
+
+**`.claude/skills/`** — for Claude Code working *on* this repo:
+
+| Skill | For |
+| --- | --- |
+| `beui` | Maps UI intent to `@beui` shadcn install slugs |
+| `high-end-visual-design` | Craft standards: type, spacing, shadow, motion |
+| `redesign-existing-projects` | Audit-first upgrade of existing UI |
+| `minimalist-ui` | Editorial/utilitarian direction |
+| `improve-codebase-architecture` | Structural refactoring |
+
+`design-taste-frontend` is deliberately **not** here: it self-scopes to "landing pages,
+portfolios, and redesigns — not dashboards, not data tables, not multi-step product UI," and
+becode's interface is product UI. It stays available at user level.
+
+**`agent/skills/`** — loaded on demand by the becode agent at runtime, when it works on a *target*
+repo. `eve info` should show 3:
+
+| Skill | For |
+| --- | --- |
+| `design-system-first` | **becode-authored.** Read the target's design system, reuse before inventing, change only what was asked |
+| `high-end-visual-design` | Craft standards |
+| `redesign-existing-projects` | Audit-first, framework-agnostic |
+
+`design-system-first` exists because the two off-the-shelf skills actively conflict with the brief
+inside someone else's codebase — they say things like "replace the font with one that has
+character" and "pick one accent colour, remove the rest." That is right for a greenfield page and
+wrong for a marketing manager's "make the headline bigger." It establishes the precedence (project
+system wins, general taste applies only where the project has not decided) and carves out the one
+exception: accessibility defects get fixed. `agent/instructions.md` requires loading it first.
+
+Skill routing is the `description` frontmatter — eve advertises only that, and the model calls
+`load_skill` off it. Write descriptions as "when to use this," not "what this is."
+
 ## UI
 
 becode's own web interface uses **beUI** (`@beui`), a shadcn registry of animated React
 components — registered in `components.json`, so `npx shadcn@latest add @beui/<slug>` works.
-There is no `beui` runtime package; components are copied in. The `beui` skill
-(`.claude/skills/beui/`) maps intent to install slugs, and a `beui` MCP server is configured.
-Fetch <https://beui.dev/r/registry.json> for the live list before picking a component.
-
-Note the skill lives in `.claude/skills/` (for Claude Code, building this app), **not**
-`agent/skills/` (which would advertise it to the becode agent at runtime — wrong audience).
-
-## Commands
-
-```bash
-nvm use                      # Node 24 — do this first
-npm run dev                  # Next.js + eve together; this is the app
-npm run typecheck            # tsc --noEmit
-npm run check:policy         # run the role policy against known allow/refuse cases
-npm run build                # next build
-npx eve info                 # resolved config + discovery diagnostics
-npx eve dev                  # agent-only terminal REPL (no Next.js)
-npx eve dev --no-ui          # same, headless — use this for scripted verification
-npx eve invoke "<prompt>"    # one turn, no TUI; --json-schema for structured output
-npx eve eval                 # run evals/  (--list, --tag, --strict for CI)
-npx eve logs ls              # dev-session diagnostic logs; `eve logs <id>` to read
-npx eve registry search <q>  # look for an existing integration before writing one
-npx eve add <item> --non-interactive
-```
-
-`eve dev` opens an interactive REPL — never launch the bare command as a background process.
-
-Needs a model credential: `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`.
-
-## eve facts this design leans on
-
-Verified against the docs. **Read `node_modules/eve/docs/` first** — it ships with the installed
-package and matches its version exactly. `docs/README.md` maps each task to its page. Fall back to
-<https://eve.dev/docs> only if the package docs are missing. eve is in preview and its API moves;
-do not infer eve APIs from other agent frameworks, and say plainly when the docs don't settle it.
-
-- **Sandbox** — one isolated bash env per agent rooted at `/workspace`, with built-in `bash`,
-  `read_file`, `write_file`, `glob`, `grep`. Backend resolves in order: Vercel Sandbox → Docker →
-  microsandbox → just-bash. This app runs on the CEO's machine, so pin `docker()` rather than
-  inheriting a remote default.
-- **`sandbox.spawn()`** returns a `SandboxProcess` that persists while the agent does other work.
-  That is how target dev servers stay up between turns — not a detached `&` shell job.
-- **Approval gating** — `approval: always()` from `eve/tools/approval` on anything that mutates a
-  target repo or opens a PR. The turn parks durably at `session.waiting` until a human answers and
-  survives process restarts.
-- **`ask_question`** (built-in) is how to get a decision mid-task instead of guessing.
-- **Skills** load on demand: eve advertises each skill's `description` and loads the body via a
-  framework-owned `load_skill` tool. The `description` is the entire routing mechanism — write it
-  as "when to use this", not "what this is".
-- **Declared subagents inherit nothing** from the root's authored slots and get their own sandbox.
-  Multiple built-in `agent` tool calls in one response run concurrently, so parallel workers need
-  non-overlapping write scopes — which is exactly what one-worktree-per-task buys.
+There is no `beui` runtime package; components are copied in. Fetch
+<https://beui.dev/r/registry.json> for the live list before picking a component. The `beui` MCP
+server is in local config (`~/.claude.json`), not the repo — a teammate runs `claude mcp add`
+themselves.
 
 ## Open decisions
 
