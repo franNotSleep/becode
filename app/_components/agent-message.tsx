@@ -7,7 +7,12 @@ import { mermaid } from "@streamdown/mermaid";
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { AgentActivity } from "@/components/agents/agent-activity";
-import { Message, MessageContent } from "@/components/agents/message";
+import {
+  Message,
+  MessageBubble,
+  MessageBubbleContent,
+  MessageContent,
+} from "@/components/agents/message";
 import { ToolApproval } from "@/components/agents/tool-approval";
 import { ToolResult, ToolResultOutput } from "@/components/agents/tool-result";
 import type { BecodeMessage, BecodePart } from "./use-becode-agent";
@@ -36,8 +41,22 @@ export function AgentMessage({
   readonly message: BecodeMessage;
   readonly onRespond: OnRespond;
 }) {
+  // What the CEO typed reads as something they said: a bubble on their side. What becode says is
+  // the document — full width, no container, so a diff or a URL is not squeezed into a chat bubble.
+  if (message.role === "user") {
+    return (
+      <Message animateIn from="user">
+        <MessageContent>
+          <MessageBubble animateIn variant="soft">
+            <MessageBubbleContent>{plainText(message)}</MessageBubbleContent>
+          </MessageBubble>
+        </MessageContent>
+      </Message>
+    );
+  }
+
   return (
-    <Message animateIn from={message.role}>
+    <Message animateIn from="assistant">
       <MessageContent className="space-y-3">
         {message.parts.map((part, index) => (
           <AgentMessagePart
@@ -50,6 +69,13 @@ export function AgentMessage({
       </MessageContent>
     </Message>
   );
+}
+
+function plainText(message: BecodeMessage): string {
+  return message.parts
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("")
+    .trim();
 }
 
 function AgentMessagePart({

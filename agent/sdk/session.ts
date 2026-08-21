@@ -15,6 +15,13 @@ const BECODE_ROOT = process.cwd();
 /** Tools the model may use without a policy check. Reading is unrestricted; writing is not. */
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "TodoWrite"]);
 
+/**
+ * Harness plumbing, not work. `ToolSearch` loads deferred tool schemas; it never reaches
+ * `canUseTool` because it cannot execute anything, and what it loads is still gated. Showing it
+ * to a non-engineer is noise.
+ */
+const HIDDEN_TOOLS = new Set(["ToolSearch"]);
+
 /** Built-in tools that write to disk. Each one is judged before it lands. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
 
@@ -104,7 +111,29 @@ export function run(
     return out;
   }
 
+  /**
+   * Fail closed.
+   *
+   * A `canUseTool` that throws does not block the call — the tool runs anyway. So a network blip
+   * inside the judge would silently become an approval, which is the exact failure this whole
+   * arrangement exists to prevent. Every path out of `decide` is a returned verdict.
+   */
   const canUseTool = async (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { toolUseID: string },
+  ): Promise<PermissionResult> => {
+    try {
+      return await decide(toolName, input, options);
+    } catch (e) {
+      return {
+        behavior: "deny",
+        message: `The policy check failed (${(e as Error).message}), so this is refused. Tell the user.`,
+      };
+    }
+  };
+
+  const decide = async (
     toolName: string,
     input: Record<string, unknown>,
     { toolUseID }: { toolUseID: string },
@@ -142,6 +171,10 @@ export function run(
     return { behavior: "deny", message: `${toolName} is not available to becode.` };
   };
 
+  let lastSessionId: string | undefined;
+  /** tool_use ids whose results should also stay out of the transcript. */
+  const hiddenCalls = new Set<string>();
+
   void (async () => {
     try {
       const response = query({
@@ -155,6 +188,14 @@ export function run(
           plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
           // No allowedTools, no permissionMode — see the note above.
           disallowedTools: ["Bash", "WebSearch", "WebFetch", "Task", "AskUserQuestion"],
+          // Load no settings files. A `permissions.allow` rule in the *target repo's*
+          // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
+          // and the target repo is not becode's trust boundary.
+          settingSources: [],
+          // Claude Code's bundled skills are written for a developer at a terminal — `run` and
+          // `code-review` would compete with run_project and with becode's actual loop. Only the
+          // becode plugin's four skills should be routable. Plugins are unaffected by this.
+          settings: { disableBundledSkills: true },
           canUseTool,
           maxTurns: MAX_TURNS,
           resume: sessionId,
@@ -163,8 +204,13 @@ export function run(
       });
 
       for await (const sdkMessage of response) {
+        // Every system message carries session_id, not just the init one — emit on change only.
         if (sdkMessage.type === "system" && "session_id" in sdkMessage) {
-          emit({ type: "session", sessionId: String(sdkMessage.session_id) });
+          const id = String(sdkMessage.session_id);
+          if (id !== lastSessionId) {
+            lastSessionId = id;
+            emit({ type: "session", sessionId: id });
+          }
           continue;
         }
 
@@ -176,6 +222,10 @@ export function run(
             } else if (block.type === "thinking" && String(block.thinking ?? "").trim()) {
               emit({ type: "reasoning", text: String(block.thinking) });
             } else if (block.type === "tool_use") {
+              if (HIDDEN_TOOLS.has(String(block.name))) {
+                hiddenCalls.add(String(block.id));
+                continue;
+              }
               emit({
                 type: "tool",
                 id: String(block.id),
@@ -192,6 +242,7 @@ export function run(
           const blocks = (sdkMessage.message.content as unknown as Record<string, unknown>[]) ?? [];
           for (const block of blocks) {
             if (block.type === "tool_result") {
+              if (hiddenCalls.has(String(block.tool_use_id))) continue;
               emit({
                 type: "tool-result",
                 id: String(block.tool_use_id),
