@@ -17,10 +17,6 @@
     "check:policy": "node --experimental-strip-types roles/check.ts"
   },
   "dependencies": {
-    "@vercel/connect": "0.4.3",
-    "ai": "^7.0.58",
-    "eve": "^0.44.0",
-    "zod": "4.4.3",
     "@radix-ui/react-use-controllable-state": "1.2.2",
     "@shikijs/core": "4.1.0",
     "@shikijs/engine-javascript": "4.1.0",
@@ -30,9 +26,12 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@tailwindcss/postcss": "4.3.0",
+    "@vercel/connect": "0.4.3",
+    "ai": "^7.0.58",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
+    "eve": "^0.44.0",
     "lucide-react": "1.16.0",
     "motion": "12.40.0",
     "nanoid": "5.1.11",
@@ -44,13 +43,15 @@
     "streamdown": "2.5.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.0",
-    "use-stick-to-bottom": "1.1.4"
+    "use-stick-to-bottom": "1.1.4",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.x",
-    "typescript": "6.0.3",
     "@types/react": "19.2.15",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "just-bash": "^3.4.1",
+    "typescript": "6.0.3"
   },
   "engines": {
     "node": "24.x"

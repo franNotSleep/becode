@@ -195,8 +195,13 @@ Without a credential everything starts and routes fine — sessions are created,
 and the first model call fails with `MODEL_CALL_FAILED / gateway-auth-missing-credentials`. If
 the UI looks alive but nothing answers, that is the reason.
 
-Docker is not needed. The sandbox backend would want it, but no code path calls `getSandbox()`
-now that the sandbox-targeting built-ins are disabled.
+Docker is not needed, and `agent/sandbox.ts` pins `justbash()` so eve never goes looking for it.
+Left unpinned, `defaultBackend()` resolves by probing — it runs `docker version` on every boot, and
+on a Mac with a `credsStore` in `~/.docker/config.json` that makes the docker CLI call
+`docker-credential-osxkeychain`, which pops a keychain password prompt every `npm run dev`. becode
+never creates a sandbox at all (nothing calls `getSandbox()` now that the sandbox-targeting
+built-ins are disabled), so the probe was for a container runtime it would never use. eve installs
+`just-bash` itself the first time it sees the pinned backend — that devDependency is expected.
 
 ## Commands
 
