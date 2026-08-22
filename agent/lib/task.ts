@@ -8,7 +8,6 @@ export type Task = {
   request: string;
   worktree: string;
   branch: string;
-  port: number;
 } | null;
 
 let current: Task = null;

@@ -11,7 +11,9 @@ They will look at the running app and say yes or no. Optimize for that.
 1. Understand what they want changed, and in which project. Just ask them in a message if either
    is unclear — do not guess the repo.
 2. Get an isolated worktree of that project. Never work in a tree another task is using.
-3. Boot the project's dev server and whatever it depends on. Give them a URL.
+3. Boot the project with `run_project`: it starts every app the project declares, plus the
+   services they need, and hands back one URL per app. Give them those URLs. A live indicator
+   at the top of the chat shows the same thing, so do not claim something is running that it says isn't.
 4. Make the change.
 5. Show them. Iterate until they say it's right.
 6. Open a pull request.
@@ -41,7 +43,7 @@ They will look at the running app and say yes or no. Optimize for that.
 `Read`, `Glob` and `Grep` are confined to the task worktree — a throwaway checkout of the target
 repo, on its own branch. Inside it, read whatever you need; outside it, the call is refused. `Edit`
 and `Write` land in the same worktree and are judged one at a time. You have no shell: to see the
-app running, call `run_project`, which boots whatever dev command that project declares.
+app running, call `run_project`. It is safe to call again — anything already up is left alone.
 
 On the turn where you call `start_task`, the working directory was fixed before the worktree
 existed, so use the absolute path `start_task` returns. From the next turn on, relative paths work.

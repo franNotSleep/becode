@@ -68,8 +68,29 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Always-on system prompt | `agent/instructions.md` |
-| HTTP surface | `app/api/agent/route.ts`, `app/api/agent/approve/route.ts` |
+| HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts` |
 | CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
+| Is it live, and at which URLs | `app/_components/live-status.tsx` ← `GET /api/agent/status` |
+
+## Booting the target project
+
+A project declares two lists, and the split is the whole design:
+
+- **`apps`** — the surfaces a person looks at. One URL each, started **in the task worktree** so
+  they serve the branch being changed. `$PORT` is substituted from the app's base port plus
+  `BECODE_PORT_OFFSET` (0 unless a second becode instance is running on this machine — offsetting
+  by default would silently break CORS against a backend that allowlists the real ports).
+- **`services`** — db, queue, api. Started **in the source checkout**, not the worktree: they sit
+  on fixed host ports, they are shared across tasks, and a second copy would just fail to bind.
+
+`run_project` starts only what is not already up, so calling it again after an edit is free — every
+dev server here hot-reloads. Liveness is read off the child processes, never a flag: a one-shot like
+`docker compose up -d` counts as up when it exits 0, a crash or a kill does not. The apps are killed
+when a task ends, or the next task would be looking at the previous worktree's code.
+
+`git worktree add` copies tracked files only, so `createWorktree` also copies the source checkout's
+gitignored `.env*` files across. Without them the worktree boots into a broken app — which is
+exactly the thing the person is about to look at.
 
 ## How the constraint works
 
@@ -194,11 +215,15 @@ nvm use                      # Node 24 — .nvmrc; the SDK requires >=24
 claude setup-token           # mints a long-lived subscription token
 cp .env.example .env.local   # then paste it as CLAUDE_CODE_OAUTH_TOKEN
 npm install                  # first time only
-npm run dev                  # http://localhost:3000
+npm run dev                  # http://localhost:4000
 ```
 
 `npm run dev` is the whole app: Next.js serves the UI, and `POST /api/agent` runs the agent in a
 Node route handler, streaming NDJSON back. There is no second process and no daemon.
+
+becode itself sits on **:4000**, not :3000, because :3000 belongs to a target app (tixvendor).
+Target apps keep their native ports: their env files and the backend's CORS allowlist are
+already written for them, and moving becode is a one-line change while moving them is not.
 
 Without a credential the UI loads and the first message comes back as a plain error naming the
 fix — `hasAuth()` in `agent/sdk/session.ts` checks before anything else runs. `ANTHROPIC_API_KEY`
@@ -212,6 +237,7 @@ there is nothing to virtualize.
 ```bash
 npm run typecheck            # tsc --noEmit
 npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
+npm run check:boot           # port math, liveness, and the env-file copy — no servers started
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires

@@ -7,6 +7,7 @@ import { MessageScroller } from "@/components/agents/message-scroller";
 import { PromptInput } from "@/components/agents/prompt-input";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
+import { LiveStatus } from "./live-status";
 import { useBecodeAgent } from "./use-becode-agent";
 
 const AGENT_NAME = "becode";
@@ -37,8 +38,9 @@ export function AgentChat() {
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       {isEmpty ? null : (
-        <header className="flex h-14 shrink-0 items-center justify-center px-4">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 px-4 sm:px-6">
           <span className="truncate text-muted-foreground text-sm">{AGENT_NAME}</span>
+          <LiveStatus />
         </header>
       )}
 

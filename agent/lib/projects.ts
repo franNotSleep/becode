@@ -13,9 +13,16 @@ export type Project = {
   baseBranch: string;
   /** Run once in each fresh worktree before the dev server. */
   install?: string;
-  /** The dev server. `port` is the base — becode offsets it per task. */
-  dev: { command: string; port: number };
-  /** Anything the dev server needs up first (db, queue, worker). */
+  /**
+   * The surfaces a person actually looks at. Each gets a URL. `$PORT` in the command is
+   * substituted; `port` is the base, offset by BECODE_PORT_OFFSET.
+   */
+  apps: { name: string; command: string; port: number }[];
+  /**
+   * Anything the apps need up first — db, queue, api. Run once, from the *source checkout*,
+   * not the worktree: they are shared infrastructure on fixed ports, and they need the
+   * untracked `.env` files that live there.
+   */
   services?: { name: string; command: string }[];
   /**
    * Files that define the look of the app — tokens, theme config, component index.
@@ -25,3 +32,13 @@ export type Project = {
 };
 
 export const defineProjects = (projects: Project[]): Project[] => projects;
+
+/** Two becode instances on one machine collide on ports unless one is offset. */
+export const PORT_OFFSET = Number(process.env.BECODE_PORT_OFFSET ?? 0);
+
+/** Where each of a project's apps will be reachable once `run_project` has booted it. */
+export const appUrls = (project: Project) =>
+  project.apps.map((app) => {
+    const port = app.port + PORT_OFFSET;
+    return { name: app.name, port, url: `http://localhost:${port}` };
+  });

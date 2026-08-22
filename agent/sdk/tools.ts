@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { projects } from "../../becode.projects.ts";
+import { appUrls } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { activeTask, findProject, resolveInWorktree, task } from "../lib/task.ts";
@@ -74,9 +75,7 @@ const startTask = tool(
       baseBranch: project.baseBranch,
     });
 
-    // Offset the port per task so concurrent sessions don't collide.
-    const port = project.dev.port + (slug.length % 20) * 10;
-    task.update(() => ({ projectId, request, worktree: dir, branch, port }));
+    task.update(() => ({ projectId, request, worktree: dir, branch }));
 
     const designSystem = await Promise.all(
       (project.designSystem ?? []).map(async (rel) => {
@@ -101,24 +100,46 @@ const startTask = tool(
 );
 
 /**
- * Live dev servers, keyed by worktree.
+ * Everything becode has booted for the current task, keyed by name.
  *
- * ponytail: in-process map, not a supervisor. becode is one local process serving one
+ * ponytail: an in-process map, not a supervisor. becode is one local process serving one
  * person; if it ever needs to survive a restart, move this to a pidfile in the worktree.
  */
-const running = new Map<string, ChildProcess>();
+const live = new Map<string, { name: string; url?: string; child: ChildProcess; logs: string[] }>();
 
-function start(cwd: string, command: string, env: Record<string, string>): ChildProcess {
+/** Still doing its job: running, or a one-shot (`docker compose up -d`) that exited clean. */
+const isUp = (child: ChildProcess) =>
+  child.signalCode === null && (child.exitCode === null || child.exitCode === 0);
+
+function start(name: string, cwd: string, command: string, env: Record<string, string>, url?: string) {
   const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, detached: false });
   child.unref();
-  return child;
+  const logs: string[] = [];
+  const capture = (buf: Buffer) => {
+    logs.push(buf.toString());
+    if (logs.length > 40) logs.shift();
+  };
+  child.stdout?.on("data", capture);
+  child.stderr?.on("data", capture);
+  const entry = { name, url, child, logs };
+  live.set(name, entry);
+  return entry;
+}
+
+/** What the UI's live indicator reads. The child processes are the source of truth, not a flag. */
+export function liveStatus() {
+  const current = task.get();
+  const servers = [...live.values()]
+    .filter((s) => isUp(s.child))
+    .map((s) => ({ name: s.name, url: s.url }));
+  return { branch: current?.branch, servers };
 }
 
 const runProject = tool(
   "run_project",
-  "Boot the current project's dev server (and its services) in the task worktree, then " +
-    "return the URL to look at. Call this after making a change so the user can see it. " +
-    "Restarts the server if it is already running.",
+  "Boot the current project's apps (and the services they need) and return a URL for each one. " +
+    "Call this after making a change so the user can see it. Anything already running is left " +
+    "alone — dev servers hot-reload, so a second call is cheap.",
   {
     install: z
       .boolean()
@@ -128,44 +149,52 @@ const runProject = tool(
   async ({ install }) => {
     const { task: current, project } = activeTask();
 
-    running.get(current.worktree)?.kill();
-    running.delete(current.worktree);
-
     if (install && project.install) {
       await new Promise<void>((resolve, reject) => {
-        const p = start(current.worktree, project.install!, {});
+        const p = spawn(project.install!, { cwd: current.worktree, shell: true, env: process.env });
         p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`install failed (exit ${code})`))));
       });
     }
 
+    const started: string[] = [];
+
+    // Services run in the *source checkout*: fixed ports, shared across tasks, and they read
+    // env files that only exist there. Starting a second copy would just fail to bind.
     for (const service of project.services ?? []) {
-      start(current.worktree, service.command, {});
+      const existing = live.get(service.name);
+      if (existing && isUp(existing.child)) continue;
+      start(service.name, project.path, service.command, {});
+      started.push(service.name);
     }
 
-    const child = start(current.worktree, project.dev.command, { PORT: String(current.port) });
-    running.set(current.worktree, child);
-
-    const logs: string[] = [];
-    const capture = (buf: Buffer) => {
-      logs.push(buf.toString());
-      if (logs.length > 40) logs.shift();
-    };
-    child.stdout?.on("data", capture);
-    child.stderr?.on("data", capture);
-
-    // Give it a moment to bind or die, so a crash is reported now rather than as a blank page.
-    // A cold pnpm monorepo start is slower than a warm one, hence the generous wait.
-    await new Promise((r) => setTimeout(r, 8000));
-    if (child.exitCode !== null) {
-      throw new Error(`Dev server exited immediately (code ${child.exitCode}).\n${logs.join("")}`);
+    // Apps run in the worktree, on the branch being changed. ponytail: never restarted — every
+    // dev server here hot-reloads. Restart becode if a config file (not a component) changes.
+    const urls = appUrls(project);
+    for (const [index, app] of project.apps.entries()) {
+      const { port, url } = urls[index];
+      const existing = live.get(app.name);
+      if (existing && isUp(existing.child)) continue;
+      start(app.name, current.worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url);
+      started.push(app.name);
     }
 
-    return reply({
-      url: `http://localhost:${current.port}`,
-      branch: current.branch,
-      services: (project.services ?? []).map((s) => s.name),
-      logs: logs.join("").slice(-2000),
-    });
+    // Give anything new a moment to bind or die, so a crash is reported now rather than as a
+    // blank page. A cold pnpm monorepo start is slower than a warm one, hence the generous wait.
+    if (started.length > 0) await new Promise((r) => setTimeout(r, 12_000));
+
+    const report = [...live.values()].map((s) => ({
+      name: s.name,
+      url: s.url,
+      running: isUp(s.child),
+      ...(isUp(s.child) ? {} : { exitCode: s.child.exitCode, logs: s.logs.join("").slice(-1200) }),
+    }));
+
+    const dead = report.filter((s) => !s.running);
+    if (dead.some((s) => project.apps.some((a) => a.name === s.name))) {
+      throw new Error(`Some apps failed to start:\n${JSON.stringify(dead, null, 2)}`);
+    }
+
+    return reply({ branch: current.branch, started, servers: report });
   },
 );
 
@@ -199,6 +228,14 @@ const openPullRequest = tool(
 
     const url = stdout.trim().split("\n").pop() ?? "";
     task.update(() => null);
+
+    // The apps were serving this worktree. Left running, the next task would show its code.
+    // Services are shared infrastructure — they stay up.
+    for (const [name, entry] of live) {
+      if (!entry.url) continue;
+      entry.child.kill();
+      live.delete(name);
+    }
     return reply({ url, branch: current.branch, files });
   },
 );

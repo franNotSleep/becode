@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
@@ -39,7 +40,27 @@ export async function createWorktree(opts: {
   );
 
   await git(opts.repo, "worktree", "add", "-b", branch, dir, base);
+  await copyLocalEnv(opts.repo, dir);
   return { dir, branch };
+}
+
+/**
+ * Copy the source checkout's gitignored env files into a fresh worktree.
+ *
+ * `git worktree add` brings tracked files only, so a repo whose dev servers read a gitignored
+ * `.env` boots into a broken app — the exact thing the person is about to look at. Same machine,
+ * same repo, so this moves no secret anywhere it was not already.
+ */
+export async function copyLocalEnv(repo: string, dir: string): Promise<void> {
+  const listed = await git(
+    repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "*.env", "*.env.*",
+  );
+  await Promise.all(
+    listed.split("\0").filter(Boolean).map(async (rel) => {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.copyFile(path.join(repo, rel), path.join(dir, rel));
+    }),
+  );
 }
 
 export async function removeWorktree(repo: string, dir: string): Promise<void> {
