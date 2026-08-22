@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { query, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
-import { changedFiles, diff } from "../lib/git.ts";
+import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { resolveInWorktree, task } from "../lib/task.ts";
 import { judgeChange } from "./judge.ts";
@@ -12,8 +12,8 @@ const MAX_TURNS = Number(process.env.BECODE_MAX_TURNS ?? 120);
 /** becode's own directory. Captured at import time, before any task changes what cwd means. */
 const BECODE_ROOT = process.cwd();
 
-/** Tools the model may use without a policy check. Reading is unrestricted; writing is not. */
-const READ_TOOLS = new Set(["Read", "Glob", "Grep", "TodoWrite"]);
+/** Read-only tools. Not judged, but still confined to the worktree. */
+const READ_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
 /**
  * Harness plumbing, not work. `ToolSearch` loads deferred tool schemas; it never reaches
@@ -164,7 +164,34 @@ export function run(
           };
     }
 
-    if (READ_TOOLS.has(toolName) || toolName.startsWith("mcp__becode__")) {
+    // Reading is unrestricted *inside the worktree* — and nowhere else. Without this, an absolute
+    // path walks straight out of the target repo and into becode's own source, including
+    // .env.local. The model declining to do so is not a boundary; this is.
+    if (toolName === "TodoWrite") return { behavior: "allow", updatedInput: input };
+
+    if (READ_TOOLS.has(toolName)) {
+      const current = task.get();
+      if (!current) {
+        return {
+          behavior: "deny",
+          message: "There is no checkout to read yet. Call start_task first.",
+        };
+      }
+      const target = input.file_path ?? input.path;
+      if (typeof target === "string" && target.length > 0) {
+        try {
+          resolveInWorktree(current.worktree, target);
+        } catch {
+          return {
+            behavior: "deny",
+            message: `Only files inside the task worktree can be read. ${current.worktree} is the root.`,
+          };
+        }
+      }
+      return { behavior: "allow", updatedInput: input };
+    }
+
+    if (toolName.startsWith("mcp__becode__")) {
       return { behavior: "allow", updatedInput: input };
     }
 
@@ -180,7 +207,10 @@ export function run(
       const response = query({
         prompt: message,
         options: {
-          cwd: task.get()?.worktree ?? BECODE_ROOT,
+          // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
+          // calls start_task there is no worktree yet, and anything relative would resolve into
+          // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
+          cwd: task.get()?.worktree ?? WORKTREE_ROOT,
           systemPrompt: await systemPrompt(),
           mcpServers: { becode: becodeTools },
           // cwd is the target worktree, so this must be absolute: becode's own skills live here,

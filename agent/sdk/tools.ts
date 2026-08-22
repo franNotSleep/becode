@@ -90,10 +90,12 @@ const startTask = tool(
       branch,
       worktree: dir,
       designSystem,
-      next: designSystem.length
-        ? "Read the design system files before making any visual change. Read and Glob are now " +
-          "rooted at the worktree above."
-        : "No design system configured for this project.",
+      next:
+        `Use absolute paths under ${dir} for the rest of this turn — the working directory was ` +
+        `fixed before this worktree existed. ` +
+        (designSystem.length
+          ? "Read the design system files before making any visual change."
+          : "No design system is configured for this project."),
     });
   },
 );

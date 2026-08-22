@@ -81,9 +81,14 @@ case against the policy text, defaulting to refusal when unsure — including wh
 unparseable (`parseVerdict` in `agent/sdk/judge.ts`).
 
 The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
-checkout, rooted at the task worktree via `cwd`. `Bash` is removed outright with
-`disallowedTools`, which strips the tool definition from the request — the model never sees it. So
-is `Task`, so there are no subagents with their own permission surface to reason about.
+checkout. `Bash` is removed outright with `disallowedTools`, which strips the tool definition from
+the request — the model never sees it. So is `Task`, so there are no subagents with their own
+permission surface to reason about.
+
+Every path, read or write, goes through `resolveInWorktree` in `canUseTool`. `cwd` alone is not a
+boundary: it is fixed when the query starts, so on the turn that calls `start_task` there is no
+worktree yet — and an absolute path ignores `cwd` entirely. Without the check, `Read` would reach
+becode's own `.env.local`. The model declining to do that is not a boundary either.
 
 All three gates live in **one `canUseTool` callback** (`agent/sdk/session.ts`):
 
