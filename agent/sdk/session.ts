@@ -11,10 +11,12 @@ import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { findProject } from "../lib/db.ts";
+import { appUrls } from "../lib/projects.ts";
+import { holders, release } from "../lib/ports.ts";
 import { canRead } from "../lib/reads.ts";
 import { type Chat, chatFor, rememberChat, resolveInWorktree } from "../lib/task.ts";
 import { judgeChange } from "./judge.ts";
-import { becodeTools, TOOL } from "./tools.ts";
+import { becodeTools, ownedPids, TOOL } from "./tools.ts";
 import { assistantEvents, toolResultEvents } from "./transcript.ts";
 
 const MAX_TURNS = Number(process.env.BECODE_MAX_TURNS ?? 120);
@@ -203,6 +205,43 @@ export function run({
       return approved
         ? { behavior: "allow", updatedInput: input }
         : { behavior: "deny", message: "The user did not add this project." };
+    }
+
+    // A busy app port is a dead end otherwise: run_project fails with EADDRINUSE and the agent
+    // retries forever, because the only thing it can stop is what this becode started. Whatever
+    // else is there may be something the person wants, so becode asks rather than killing.
+    if (toolName === TOOL.runProject) {
+      const blocked = await foreignHolders(chat);
+      if (blocked.length > 0) {
+        const list = blocked
+          .map((b) => `:${b.port} — ${b.holders.map((h) => `${h.command} (pid ${h.pid})`).join(", ")}`)
+          .join("\n");
+        const approved = await askPerson(toolUseID, emit, signal, {
+          tool: "run_project",
+          title: `Free port${blocked.length > 1 ? "s" : ""} ${blocked.map((b) => b.port).join(", ")}`,
+          parameters: { holding: list },
+          reason:
+            `These ports are taken by something becode did not start — most likely a leftover ` +
+            `from an earlier run. Stop them so the app can boot?\n${list}`,
+        });
+        if (!approved) {
+          return {
+            behavior: "deny",
+            message:
+              `The user left these running, so the app cannot boot:\n${list}\n` +
+              `Tell them, and do not retry run_project until they have freed the port.`,
+          };
+        }
+        for (const { port, holders: found } of blocked) {
+          if (!(await release(port, found.map((h) => h.pid)))) {
+            return {
+              behavior: "deny",
+              message: `Port ${port} is still busy after stopping what was there. Tell the user.`,
+            };
+          }
+        }
+      }
+      return { behavior: "allow", updatedInput: input };
     }
 
     // Gate 2: every write, judged by what it actually does to the app.
@@ -449,6 +488,26 @@ async function* oneUserMessage(
     message: { role: "user", content: [...blocks, { type: "text", text }] },
     parent_tool_use_id: null,
   };
+}
+
+/**
+ * App ports held by something this becode did not start.
+ *
+ * Its own children are not reported: `run_project` already hands the ports over between chats.
+ * What is left is a leftover from a previous becode, or the person's own dev server.
+ */
+async function foreignHolders(
+  chat: Chat,
+): Promise<{ port: number; holders: Awaited<ReturnType<typeof holders>> }[]> {
+  if (!chat.task) return [];
+  const ours = new Set(ownedPids());
+  const found = await Promise.all(
+    appUrls(findProject(chat.task.projectId)).map(async ({ port }) => ({
+      port,
+      holders: (await holders(port)).filter((h) => !ours.has(h.pid)),
+    })),
+  );
+  return found.filter((entry) => entry.holders.length > 0);
 }
 
 /**

@@ -194,6 +194,18 @@ Reopening a chat replays it as the **same event stream** a live turn produces
 (`agent/sdk/transcript.ts` walks the blocks once, for both), folded by the same client reducer. A
 replayed tool row cannot render differently from the one that streamed.
 
+**Apps are detached, and reaped on exit.** `spawn(..., {shell: true})` makes the child `/bin/sh -c`
+and the dev server its *grandchild*, so `child.kill()` took down the shell and left the server
+holding :3002. Apps now run `detached: true` — their own process group — and are stopped with
+`process.kill(-pid)`. Detaching is why `tools.ts` installs an `exit`/`SIGINT`/`SIGTERM` handler:
+without it a becode that stops leaves a dev server on the port that the next run cannot see, cannot
+kill, and cannot boot past. Services are left alone; they are shared and every task needs them.
+
+**A port becode did not take is a question, not an error.** If an app's port is held by a pid
+outside `ownedPids()` — a leftover from a becode that crashed, or the person's own `next dev` —
+`canUseTool` names the processes and asks before stopping them (`agent/lib/ports.ts`, `check:ports`).
+Killing blind is not becode's call; retrying forever is what it used to do instead.
+
 **Worktrees are cheap; the ports are the lock.** Two chats can hold two worktrees, edit, diff and
 open PRs independently. Only `run_project` is contended, because the apps sit on fixed ports the
 backend's CORS allowlist is written for. It **takes the lock over** rather than queueing: the
@@ -367,6 +379,7 @@ npm run check:boot           # port math, liveness, and the env-file copy — no
 npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
 npm run check:db             # the project store: seeding, round-trip, duplicate ids
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
+npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires

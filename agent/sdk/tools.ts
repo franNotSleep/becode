@@ -312,7 +312,7 @@ function takeAppPorts(branch: string | undefined, onlyIfOwnedBy?: string): strin
   if (appOwner !== branch) {
     for (const [name, entry] of live) {
       if (!entry.url) continue;
-      entry.child.kill();
+      stop(entry.child);
       live.delete(name);
     }
   }
@@ -320,12 +320,43 @@ function takeAppPorts(branch: string | undefined, onlyIfOwnedBy?: string): strin
   return displaced;
 }
 
+/** Take down the whole process group, not just the shell becode spawned. */
+function stop(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill();
+  }
+}
+
+/** The pids becode started and still tracks, so a busy port can be told apart from a leftover. */
+export function ownedPids(): number[] {
+  return [...live.values()].map((entry) => entry.child.pid).filter((pid): pid is number => !!pid);
+}
+
+/**
+ * Apps are detached, so nothing else would ever stop them: a becode that exits without this leaves
+ * a dev server holding :3002 that the next run cannot see, cannot kill, and cannot boot past.
+ * Services stay — they are shared infrastructure and every task needs them.
+ */
+for (const signal of ["exit", "SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    for (const entry of live.values()) if (entry.url) stop(entry.child);
+    if (signal !== "exit") process.exit(0);
+  });
+}
+
 /** Still doing its job: running, or a one-shot (`docker compose up -d`) that exited clean. */
 const isUp = (child: ChildProcess) =>
   child.signalCode === null && (child.exitCode === null || child.exitCode === 0);
 
 function start(name: string, cwd: string, command: string, env: Record<string, string>, url?: string) {
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, detached: false });
+  // `detached` puts the app in its own process group. It has to: `shell: true` means the child is
+  // `/bin/sh -c ...` and the dev server is its grandchild, so killing the child leaves the server
+  // holding the port. Detaching is what makes `stop` able to take the whole group down — and it is
+  // why the exit handler below exists, since a detached child would otherwise outlive becode.
+  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, detached: true });
   child.unref();
   const logs: string[] = [];
   const capture = (buf: Buffer) => {
@@ -350,6 +381,7 @@ export function liveStatus() {
 /** Tool names as the model sees them, for the permission gate. */
 export const TOOL = {
   startTask: "mcp__becode__start_task",
+  runProject: "mcp__becode__run_project",
   openPullRequest: "mcp__becode__open_pull_request",
   proposeProject: "mcp__becode__propose_project",
 } as const;
