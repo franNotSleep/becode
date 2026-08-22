@@ -135,8 +135,16 @@ The whole `Project` is one JSON column rather than tables for apps and services 
 
 ## Adding a project the agent has never seen
 
-The `+` beside **Projects** takes an absolute path — a browser cannot hand over a real folder — and
-opens a chat whose `Chat.discoveryRoot` is that path. While such a chat has no task, `canUseTool`
+The `+` beside **Projects** opens a folder picker — a `CommandDialog` (cmdk, already in
+`components/ui/`) over `GET /api/folders`. The listing is served rather than native because **no
+browser API returns an absolute path**: `webkitdirectory` gives paths relative to the folder that
+was chosen, and `showDirectoryPicker()` gives a handle with a bare name. Cursor opens the OS dialog
+because it is a native app; becode is a page in front of a local Node process. Serving it is better
+here anyway — the rows can say which folders are git repos and which are already projects. The
+route lists directory **names** only, never contents, and refuses anything outside the home
+directory; typing a path into the search box still jumps straight there.
+
+Picking a repo opens a chat whose `Chat.discoveryRoot` is that path. While such a chat has no task, `canUseTool`
 allows reads under **that one folder** instead of a worktree. `resolveInWorktree` is unchanged and
 still governs every write; nothing else widens.
 

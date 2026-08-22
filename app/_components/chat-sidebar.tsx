@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { ProjectPicker } from "./project-picker";
 
 export type ProjectChats = {
   id: string;
@@ -101,24 +102,11 @@ export function ChatSidebar({
         </button>
       </div>
 
-      {addingProject ? (
-        // A browser cannot hand over a real folder path, so the person pastes one. becode then
-        // reads that one folder — and nothing else — to work the boot recipe out.
-        <input
-          aria-label="Absolute path to a repo"
-          autoFocus
-          className="mx-2 mb-1 rounded-lg border border-border/80 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/55 focus:border-foreground/25"
-          onBlur={() => setAddingProject(false)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setAddingProject(false);
-            if (event.key !== "Enter") return;
-            const value = event.currentTarget.value.trim();
-            setAddingProject(false);
-            if (value) onAddProject(value);
-          }}
-          placeholder="/Users/you/Dev/some-repo"
-        />
-      ) : null}
+      <ProjectPicker
+        onOpenChange={setAddingProject}
+        onPick={onAddProject}
+        open={addingProject}
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {projects.map((project) => {
