@@ -10,22 +10,43 @@ export type Task = {
   branch: string;
 } | null;
 
-let current: Task = null;
+/**
+ * One chat's server-side state.
+ *
+ * The tools close over this object rather than importing a singleton, because `tool()`'s handler
+ * receives `extra: unknown` — the SDK hands it no session id, so there is nothing to look up by.
+ * `agent/sdk/tools.ts` is therefore a factory, built once per run around one of these.
+ *
+ * ponytail: a Map in one process, not a store. becode is one local process serving one person at
+ * one screen; nothing here survives a restart, and a task mid-review does not need to.
+ * apps/tixqa/server/db.ts is the precedent if that ever changes.
+ */
+export type Chat = {
+  /** Filled from the SDK's init message. Absent until the first turn of a new chat reports one. */
+  sessionId?: string;
+  /** Chosen in the sidebar before the first message, when the chat was opened on a project. */
+  projectId?: string;
+  task: Task;
+};
+
+const chats = new Map<string, Chat>();
+
+/** The state for a chat, resumed by session id or fresh. */
+export function chatFor(sessionId: string | undefined): Chat {
+  const existing = sessionId ? chats.get(sessionId) : undefined;
+  return existing ?? { task: null };
+}
 
 /**
- * The one task this process is working on.
+ * Key a chat by the session id the SDK just reported.
  *
- * ponytail: a module singleton, not a store. becode is one local process serving one person, and
- * one task at a time. If a task ever needs to survive a restart mid-review, apps/tixqa/server/db.ts
- * is the precedent — node:sqlite, no dependency.
+ * Ids can change across turns, so previous keys are left pointing at the same object rather than
+ * deleted — a stale id from the browser must still find its worktree.
  */
-export const task = {
-  get: (): Task => current,
-  update: (fn: (previous: Task) => Task): Task => {
-    current = fn(current);
-    return current;
-  },
-};
+export function rememberChat(chat: Chat, sessionId: string): void {
+  chat.sessionId = sessionId;
+  chats.set(sessionId, chat);
+}
 
 export function findProject(projectId: string): Project {
   const project = projects.find((p) => p.id === projectId);
@@ -35,10 +56,9 @@ export function findProject(projectId: string): Project {
   return project;
 }
 
-export function activeTask(): { task: NonNullable<Task>; project: Project } {
-  const current = task.get();
-  if (!current) throw new Error("No task started. Call start_task first.");
-  return { task: current, project: findProject(current.projectId) };
+export function activeTask(chat: Chat): { task: NonNullable<Task>; project: Project } {
+  if (!chat.task) throw new Error("No task started. Call start_task first.");
+  return { task: chat.task, project: findProject(chat.task.projectId) };
 }
 
 /**

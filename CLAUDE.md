@@ -63,7 +63,9 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | Policy check harness | `roles/check.ts` (`npm run check:policy`) |
 | The judge | `agent/sdk/judge.ts`, `agent/lib/roles.ts` |
 | Target repos and how to boot them | `becode.projects.ts`, `agent/lib/projects.ts` |
-| Active task, worktree path boundary | `agent/lib/task.ts` |
+| Per-chat state: the task, its worktree, its project | `agent/lib/task.ts` |
+| Content blocks → the events the browser renders | `agent/sdk/transcript.ts` |
+| Chat history and the sidebar | `app/api/sessions/`, `app/_components/chat-sidebar.tsx` |
 | What may be attached, and what it becomes | `agent/lib/attachments.ts` (`npm run check:attachments`) |
 | git worktree / diff helpers | `agent/lib/git.ts` |
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
@@ -111,6 +113,44 @@ the ask is often *in* the screenshot — "do this" beside a mock reading "make e
 otherwise be judged as "do this". The turn's blocks sit in a module singleton next to `task` so the
 judge can reach them from inside the tool call. Gate 2 and gate 3 stay text-only; they read the
 diff, which says what it does on its own.
+
+## Chats, history, and two at once
+
+**One chat, one `Chat` in `agent/lib/task.ts`** — a `Map` keyed by session id, not a singleton.
+`tool()`'s handler is given `extra: unknown`, so the SDK offers no way to tell which chat a call
+came from; that is why `agent/sdk/tools.ts` is a **factory** (`becodeTools(chat)`) built once per
+run around the chat's state. A new chat has no session id when its query starts, so the run holds
+the object and registers it under the id the init message reports — tool calls always come after
+init, so `start_task` is never slot-less.
+
+**History is not becode's to store.** The Agent SDK keeps every session on disk — the same store
+`resume` reads — and exports `listSessions({dir})`, `getSessionMessages`, `renameSession`,
+`deleteSession` and `tagSession`. `listSessions` groups by project directory and follows git
+worktrees, which is exactly how tasks are laid out, so `GET /api/sessions` is a query, not a table.
+Two things make it work:
+
+- **`cwd` decides where a transcript is filed.** It used to fall back to `WORKTREE_ROOT`, so a
+  chat landed in `~/.claude/projects/…--becode-worktrees/` — a folder with no project identity,
+  invisible to `listSessions({dir})`. The sidebar's `+` picks the project before the first
+  message, so `cwd` can be the project checkout. `cwd` is inert for permissions — `canUseTool`
+  confines reads to the worktree either way.
+- **`tagSession(id, "becode")` runs at the *end* of a turn**, not on the init message: the CLI has
+  not written the session file yet at init and the tag silently finds nothing. The tag is what
+  separates becode's chats from your terminal sessions in the same repo — a chat that never starts
+  a task sits on the project's own branch and is otherwise identical.
+
+Reopening a chat replays it as the **same event stream** a live turn produces
+(`agent/sdk/transcript.ts` walks the blocks once, for both), folded by the same client reducer. A
+replayed tool row cannot render differently from the one that streamed.
+
+**Worktrees are cheap; the ports are the lock.** Two chats can hold two worktrees, edit, diff and
+open PRs independently. Only `run_project` is contended, because the apps sit on fixed ports the
+backend's CORS allowlist is written for. It **takes the lock over** rather than queueing: the
+previous chat's apps are stopped, the new branch's are booted, and the tool says so. One person,
+one screen. `open_pull_request` only kills apps its own chat still owns.
+
+`createWorktree` now suffixes a taken name (`<slug>-2`), because two chats picking the same slug is
+normal and `git worktree add -b` fails outright on an existing branch.
 
 ## How the constraint works
 
@@ -227,6 +267,10 @@ Two notes:
   upload *queue* — progress, retry, per-file state — for a flow that has no upload step.
   One consequence of not forking: the composer will not submit an empty textarea, so an
   attachment always needs a word beside it.
+- **The sidebar is hand-rolled.** `@beui/ai-sidebar` was installed and removed: no trailing-action
+  slot for the `+`, no controlled expansion (a collapsed row cannot be reopened from state), and a
+  drag-to-move affordance that would be a lie — a chat belongs to the worktree it created. Three
+  workarounds cost more than the eighty lines in `app/_components/chat-sidebar.tsx`.
 - **`approval-card` is unused.** It rendered eve's `ask_question`; `AskUserQuestion` is in
   `disallowedTools` because in a chat the agent can simply ask in a message. `tool-approval` is
   what gate 3 renders.
@@ -307,6 +351,11 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   absence; expiry surfaces as a run-time error from the SDK. Re-run `claude setup-token`.
 - **Judge latency.** Every edit costs a judge call. If it drags, cache verdicts per (path, change)
   within a task, or drop gate 2 and rely on gates 1 and 3 — gate 3 is the boundary either way.
-- **Parallel tasks.** One task per process (`start_task` refuses a second), held in a module
-  singleton in `agent/lib/task.ts`. Two concurrent tasks would need per-session state and a
-  worktree each; `apps/tixqa/server/db.ts` is the precedent if it comes to that.
+- **Parallel tasks, and what they still share.** Solved for state — one `Chat` per session, a
+  worktree each. Not solved for the *ports*: `run_project` takes them over rather than allocating a
+  block per task, because the backend's CORS allowlist names :3000 and :3002. Per-task ports means
+  fixing that in the target repo first.
+- **Nothing survives a restart.** The `Chat` map is in-process, so a becode restart forgets which
+  worktree a chat owns — the chat still resumes (the SDK stores it), but `start_task` would refuse
+  a second one against a task it no longer knows about. `apps/tixqa/server/db.ts` is the precedent
+  if that starts to hurt; `node:sqlite` is in Node 24 with no dependency.

@@ -29,8 +29,9 @@ export async function createWorktree(opts: {
   taskId: string;
   baseBranch: string;
 }): Promise<{ dir: string; branch: string }> {
-  const branch = `becode/${opts.taskId}`;
-  const dir = path.join(WORKTREE_ROOT, opts.projectId, opts.taskId);
+  // Two chats can be open on one project, and the model picks the slug from the request — so the
+  // same name twice is normal now, and `worktree add -b` fails outright on a branch that exists.
+  const { branch, dir } = await freeName(opts.projectId, opts.taskId);
 
   await git(opts.repo, "fetch", "origin", opts.baseBranch).catch(() => {
     // Offline or no remote — fall back to the local base branch.
@@ -42,6 +43,16 @@ export async function createWorktree(opts: {
   await git(opts.repo, "worktree", "add", "-b", branch, dir, base);
   await copyLocalEnv(opts.repo, dir);
   return { dir, branch };
+}
+
+/** The first `<slug>`, `<slug>-2`, `<slug>-3`… whose worktree directory is not taken. */
+async function freeName(projectId: string, taskId: string): Promise<{ branch: string; dir: string }> {
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? taskId : `${taskId}-${n}`;
+    const dir = path.join(WORKTREE_ROOT, projectId, name);
+    const taken = await fs.stat(dir).then(() => true, () => false);
+    if (!taken) return { branch: `becode/${name}`, dir };
+  }
 }
 
 /**

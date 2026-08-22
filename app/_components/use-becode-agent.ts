@@ -41,77 +41,23 @@ export function useBecodeAgent() {
   const [messages, setMessages] = useState<BecodeMessage[]>([]);
   const [status, setStatus] = useState<AgentStatus>("ready");
   const [error, setError] = useState<string>();
+  const [projectId, setProjectId] = useState<string>();
+  const [openChatId, setOpenChatId] = useState<string>();
   const sessionId = useRef<string | undefined>(undefined);
   const abort = useRef<AbortController | undefined>(undefined);
 
-  /** Rewrite the trailing assistant message. Every event lands as a change to its parts. */
-  const patch = useCallback((update: (parts: BecodePart[]) => BecodePart[]) => {
-    setMessages((previous) => {
-      const last = previous.at(-1);
-      if (!last || last.role !== "assistant") return previous;
-      return [...previous.slice(0, -1), { ...last, parts: update(last.parts) }];
-    });
+  const apply = useCallback((event: AgentEvent) => {
+    if (event.type === "session") {
+      sessionId.current = event.sessionId;
+      setOpenChatId(event.sessionId);
+      return;
+    }
+    if (event.type === "error") {
+      setError(event.message);
+      return;
+    }
+    setMessages((previous) => reduce(previous, event));
   }, []);
-
-  const apply = useCallback(
-    (event: AgentEvent) => {
-      switch (event.type) {
-        case "session":
-          sessionId.current = event.sessionId;
-          return;
-        case "delta":
-          return patch((parts) => appendText(parts, "text", event.text));
-        case "reasoning":
-          return patch((parts) => appendText(parts, "reasoning", event.text));
-        case "tool":
-          return patch((parts) => [
-            ...parts,
-            {
-              type: "tool",
-              id: event.id,
-              name: event.name,
-              title: event.title,
-              input: event.input,
-              state: "running",
-            },
-          ]);
-        case "tool-result":
-          return patch((parts) =>
-            parts.map((part) =>
-              part.type === "tool" && part.id === event.id
-                ? { ...part, state: event.ok ? "success" : "error", output: event.text }
-                : part,
-            ),
-          );
-        case "approval":
-          return patch((parts) => [
-            ...parts,
-            {
-              type: "approval",
-              id: event.id,
-              title: event.title,
-              parameters: event.parameters,
-              reason: event.reason,
-              status: "pending",
-            },
-          ]);
-        case "approval-resolved":
-          return patch((parts) =>
-            parts.map((part) =>
-              part.type === "approval" && part.id === event.id
-                ? { ...part, status: event.approved ? "approved" : "denied" }
-                : part,
-            ),
-          );
-        case "error":
-          setError(event.message);
-          return;
-        case "done":
-          return;
-      }
-    },
-    [patch],
-  );
 
   const send = useCallback(
     async (text: string, attachments: Attachment[] = []) => {
@@ -136,7 +82,12 @@ export function useBecodeAgent() {
         const response = await fetch("/api/agent", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, sessionId: sessionId.current, attachments }),
+          body: JSON.stringify({
+            message: text,
+            sessionId: sessionId.current,
+            projectId,
+            attachments,
+          }),
           signal: controller.signal,
         });
 
@@ -156,30 +107,145 @@ export function useBecodeAgent() {
         setStatus("ready");
       }
     },
-    [apply],
+    [apply, projectId],
   );
 
   const cancel = useCallback(() => {
     abort.current?.abort();
   }, []);
 
+  /** An empty chat, optionally already about a project — that is what scopes it before a word. */
+  const startNew = useCallback((project?: string) => {
+    abort.current?.abort();
+    sessionId.current = undefined;
+    setOpenChatId(undefined);
+    setProjectId(project);
+    setMessages([]);
+    setError(undefined);
+  }, []);
+
+  /**
+   * Reopen a stored chat.
+   *
+   * The server replays it as the same event stream a live turn produces, so it folds through the
+   * same reducer — a replayed tool row cannot render differently from the one that streamed.
+   */
+  const open = useCallback(async (id: string, project?: string) => {
+    abort.current?.abort();
+    setError(undefined);
+    setProjectId(project);
+    setOpenChatId(id);
+    sessionId.current = id;
+    setMessages([]);
+    const response = await fetch(`/api/sessions/${id}`);
+    if (!response.ok) {
+      setError("That chat could not be opened.");
+      return;
+    }
+    const { events } = (await response.json()) as { events: AgentEvent[] };
+    setMessages(events.reduce(reduce, []));
+  }, []);
+
   /** Answer a pending approval. The server resolves the promise canUseTool is parked on. */
   const respond = useCallback(async (id: string, approved: boolean) => {
-    patch((parts) =>
-      parts.map((part) =>
-        part.type === "approval" && part.id === id
-          ? { ...part, status: approved ? "approved" : "denied" }
-          : part,
-      ),
-    );
+    setMessages((previous) => reduce(previous, { type: "approval-resolved", id, approved }));
     await fetch("/api/agent/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, approved }),
     }).catch(() => undefined);
-  }, [patch]);
+  }, []);
 
-  return { messages, status, error, send, cancel, respond };
+  return {
+    messages,
+    status,
+    error,
+    projectId,
+    openChatId,
+    send,
+    cancel,
+    respond,
+    startNew,
+    open,
+  };
+}
+
+/**
+ * One event folded into the transcript.
+ *
+ * Pure and shared: the live stream calls it per event as they arrive, and a reopened chat calls it
+ * over the replayed stream. There is only one place a tool row gets built.
+ */
+function reduce(messages: BecodeMessage[], event: AgentEvent): BecodeMessage[] {
+  // Replay only. Live, the browser wrote this message itself before the request went out.
+  if (event.type === "user") {
+    return [
+      ...messages,
+      {
+        id: nextId(),
+        role: "user",
+        parts: [
+          ...event.files.map((f) => ({ type: "file" as const, ...f })),
+          { type: "text" as const, text: event.text },
+        ],
+      },
+      { id: nextId(), role: "assistant", parts: [] },
+    ];
+  }
+
+  const last = messages.at(-1);
+  if (!last || last.role !== "assistant") return messages;
+  const rest = messages.slice(0, -1);
+  const put = (parts: BecodePart[]) => [...rest, { ...last, parts }];
+
+  switch (event.type) {
+    case "delta":
+      return put(appendText(last.parts, "text", event.text));
+    case "reasoning":
+      return put(appendText(last.parts, "reasoning", event.text));
+    case "tool":
+      return put([
+        ...last.parts,
+        {
+          type: "tool",
+          id: event.id,
+          name: event.name,
+          title: event.title,
+          input: event.input,
+          state: "running",
+        },
+      ]);
+    case "tool-result":
+      return put(
+        last.parts.map((part) =>
+          part.type === "tool" && part.id === event.id
+            ? { ...part, state: event.ok ? "success" : "error", output: event.text }
+            : part,
+        ),
+      );
+    case "approval":
+      return put([
+        ...last.parts,
+        {
+          type: "approval",
+          id: event.id,
+          title: event.title,
+          parameters: event.parameters,
+          reason: event.reason,
+          status: "pending",
+        },
+      ]);
+    case "approval-resolved":
+      return put(
+        last.parts.map((part) =>
+          part.type === "approval" && part.id === event.id
+            ? { ...part, status: event.approved ? "approved" : "denied" }
+            : part,
+        ),
+      );
+    default:
+      return messages;
+  }
 }
 
 /** Streaming text lands in the trailing part of its kind rather than a new part per token. */

@@ -5,10 +5,11 @@ import { run } from "@/agent/sdk/session.ts";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const { message, sessionId, attachments } = (await request.json()) as {
+  const { message, sessionId, attachments, projectId } = (await request.json()) as {
     message?: unknown;
     sessionId?: unknown;
     attachments?: unknown;
+    projectId?: unknown;
   };
 
   if (typeof message !== "string" || message.trim().length === 0) {
@@ -25,12 +26,13 @@ export async function POST(request: Request) {
   }
 
   const encoder = new TextEncoder();
-  const events = run(
-    message.trim(),
-    blocks,
-    typeof sessionId === "string" ? sessionId : undefined,
-    request.signal,
-  );
+  const events = run({
+    message: message.trim(),
+    attachments: blocks,
+    sessionId: typeof sessionId === "string" ? sessionId : undefined,
+    projectId: typeof projectId === "string" ? projectId : undefined,
+    signal: request.signal,
+  });
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {

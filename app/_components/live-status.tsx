@@ -11,19 +11,23 @@ type Status = { branch?: string; servers: { name: string; url?: string }[] };
  * child processes on the server, and one dot does not need a socket. Nothing shows until
  * something is running, so an idle becode has no chrome.
  */
-export function LiveStatus() {
+export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string) => void }) {
   const [status, setStatus] = useState<Status>({ servers: [] });
 
   useEffect(() => {
     const tick = () =>
       fetch("/api/agent/status")
-        .then((response) => response.json())
-        .then(setStatus)
+        .then((response) => response.json() as Promise<Status>)
+        .then((next) => {
+          setStatus(next);
+          // The sidebar marks whichever chat holds the app ports. One poller, not two.
+          onBranch?.(next.branch);
+        })
         .catch(() => undefined);
     tick();
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [onBranch]);
 
   if (status.servers.length === 0) return null;
 

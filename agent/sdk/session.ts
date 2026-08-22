@@ -1,13 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { query, type PermissionResult, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  tagSession,
+  type PermissionResult,
+  type SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { resolveInWorktree, task } from "../lib/task.ts";
+import { type Chat, chatFor, findProject, rememberChat, resolveInWorktree } from "../lib/task.ts";
 import { judgeChange } from "./judge.ts";
 import { becodeTools, TOOL } from "./tools.ts";
+import { assistantEvents, toolResultEvents } from "./transcript.ts";
 
 const MAX_TURNS = Number(process.env.BECODE_MAX_TURNS ?? 120);
 
@@ -17,18 +23,13 @@ const BECODE_ROOT = process.cwd();
 /** Read-only tools. Not judged, but still confined to the worktree. */
 const READ_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
-/**
- * Harness plumbing, not work. `ToolSearch` loads deferred tool schemas; it never reaches
- * `canUseTool` because it cannot execute anything, and what it loads is still gated. Showing it
- * to a non-engineer is noise.
- */
-const HIDDEN_TOOLS = new Set(["ToolSearch"]);
-
 /** Built-in tools that write to disk. Each one is judged before it lands. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
 
 export type AgentEvent =
   | { type: "session"; sessionId: string }
+  /** Replay only: the person's own turn. Live, the browser already has it — it typed it. */
+  | { type: "user"; text: string; files: { name: string; mediaType: string; data: string }[] }
   | { type: "delta"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool"; id: string; name: string; title: string; input: unknown }
@@ -99,14 +100,26 @@ function describeEdit(input: Record<string, unknown>, worktree: string): string 
  * reaches `canUseTool`, which would silently skip the policy check. The only way to narrow the
  * surface here is `disallowedTools`, which removes a tool's definition outright.
  */
-export function run(
-  message: string,
-  attachments: ContentBlockParam[],
-  sessionId: string | undefined,
-  signal: AbortSignal,
-): AsyncIterable<AgentEvent> {
+export function run({
+  message,
+  attachments,
+  sessionId,
+  projectId,
+  signal,
+}: {
+  message: string;
+  attachments: ContentBlockParam[];
+  sessionId?: string;
+  /** Set when the chat was opened on a project in the sidebar, before anything was typed. */
+  projectId?: string;
+  signal: AbortSignal;
+}): AsyncIterable<AgentEvent> {
   const out = channel<AgentEvent>();
   const emit = out.push;
+
+  // This chat's state. A resumed chat finds the worktree it already has; a new one starts empty.
+  const chat: Chat = chatFor(sessionId);
+  if (projectId) chat.projectId = projectId;
 
   // Gate 1 reads these from here: the ask may live in the screenshot rather than the typed text.
   turnAttachments.set(attachments);
@@ -146,12 +159,12 @@ export function run(
   ): Promise<PermissionResult> => {
     // Gate 3: the real diff, judged against what was originally asked for, then a person.
     if (toolName === TOOL.openPullRequest) {
-      return gateOpenPullRequest(toolUseID, input, emit, signal);
+      return gateOpenPullRequest(chat, toolUseID, input, emit, signal);
     }
 
     // Gate 2: every write, judged by what it actually does to the app.
     if (WRITE_TOOLS.has(toolName)) {
-      const current = task.get();
+      const current = chat.task;
       if (!current) {
         return { behavior: "deny", message: "No task started. Call start_task first." };
       }
@@ -176,7 +189,7 @@ export function run(
     if (toolName === "TodoWrite") return { behavior: "allow", updatedInput: input };
 
     if (READ_TOOLS.has(toolName)) {
-      const current = task.get();
+      const current = chat.task;
       if (!current) {
         return {
           behavior: "deny",
@@ -205,6 +218,8 @@ export function run(
   };
 
   let lastSessionId: string | undefined;
+  /** A session id reported this run that still needs the `becode` tag. See the tagging note below. */
+  let untagged: string | undefined;
   /** tool_use ids whose results should also stay out of the transcript. */
   const hiddenCalls = new Set<string>();
 
@@ -218,9 +233,9 @@ export function run(
           // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
           // calls start_task there is no worktree yet, and anything relative would resolve into
           // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
-          cwd: task.get()?.worktree ?? WORKTREE_ROOT,
+          cwd: chat.task?.worktree ?? (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
           systemPrompt: await systemPrompt(),
-          mcpServers: { becode: becodeTools },
+          mcpServers: { becode: becodeTools(chat) },
           // cwd is the target worktree, so this must be absolute: becode's own skills live here,
           // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.
           plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
@@ -247,54 +262,31 @@ export function run(
           const id = String(sdkMessage.session_id);
           if (id !== lastSessionId) {
             lastSessionId = id;
+            rememberChat(chat, id);
+            untagged = id;
             emit({ type: "session", sessionId: id });
           }
           continue;
         }
 
         if (sdkMessage.type === "assistant") {
-          const blocks = (sdkMessage.message.content as unknown as Record<string, unknown>[]) ?? [];
-          for (const block of blocks) {
-            if (block.type === "text" && String(block.text ?? "").trim()) {
-              emit({ type: "delta", text: String(block.text) });
-            } else if (block.type === "thinking" && String(block.thinking ?? "").trim()) {
-              emit({ type: "reasoning", text: String(block.thinking) });
-            } else if (block.type === "tool_use") {
-              if (HIDDEN_TOOLS.has(String(block.name))) {
-                hiddenCalls.add(String(block.id));
-                continue;
-              }
-              emit({
-                type: "tool",
-                id: String(block.id),
-                name: String(block.name),
-                title: summarize(String(block.name), block.input),
-                input: block.input,
-              });
-            }
-          }
+          for (const event of assistantEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
           continue;
         }
 
         if (sdkMessage.type === "user") {
-          const blocks = (sdkMessage.message.content as unknown as Record<string, unknown>[]) ?? [];
-          for (const block of blocks) {
-            if (block.type === "tool_result") {
-              if (hiddenCalls.has(String(block.tool_use_id))) continue;
-              emit({
-                type: "tool-result",
-                id: String(block.tool_use_id),
-                ok: block.is_error !== true,
-                text: flatten(block.content).slice(0, 2000),
-              });
-            }
-          }
+          for (const event of toolResultEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
         }
       }
       emit({ type: "done" });
     } catch (e) {
       emit({ type: "error", message: (e as Error).message });
     } finally {
+      // How the sidebar tells becode's chats apart from the terminal sessions living in the same
+      // repo — a chat that never starts a task sits on the project's own branch and is otherwise
+      // indistinguishable. Tagged at the *end*: on the init message the CLI has not written the
+      // session file yet, and tagSession silently finds nothing to tag.
+      if (untagged) await tagSession(untagged, "becode").catch(() => undefined);
       for (const [id, resolve] of pendingApprovals) {
         pendingApprovals.delete(id);
         resolve(false);
@@ -357,19 +349,19 @@ function channel<T>() {
  * still waits for a person. Nothing leaves this machine without both.
  */
 async function gateOpenPullRequest(
+  chat: Chat,
   toolUseID: string,
   input: Record<string, unknown>,
   emit: (event: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<PermissionResult> {
-  const current = task.get();
+  const current = chat.task;
   if (!current) {
     return { behavior: "deny", message: "No task started — there is nothing to open a PR for." };
   }
 
-  const { projects } = await import("../../becode.projects.ts");
-  const project = projects.find((p) => p.id === current.projectId);
-  if (project && current.branch === project.baseBranch) {
+  const project = findProject(current.projectId);
+  if (current.branch === project.baseBranch) {
     return {
       behavior: "deny",
       message: `Refusing to push to the base branch ${project.baseBranch}.`,
@@ -442,26 +434,3 @@ function toController(signal: AbortSignal): AbortController {
   return controller;
 }
 
-/** A tool row reads better titled by what it acted on than by the tool's own name. */
-function summarize(name: string, input: unknown): string {
-  const tool = name.replace(/^mcp__becode__/, "");
-  if (input === null || typeof input !== "object") return tool;
-  const record = input as Record<string, unknown>;
-  for (const key of ["file_path", "pattern", "path", "projectId", "title", "request"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) {
-      return `${tool} ${value.split("/").slice(-2).join("/")}`;
-    }
-  }
-  return tool;
-}
-
-function flatten(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => (typeof block === "object" && block && "text" in block ? String(block.text) : ""))
-      .join("");
-  }
-  return "";
-}

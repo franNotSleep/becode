@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertCircleIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ACCEPT, type Attachment, isAllowed, MAX_FILES } from "@/agent/lib/attachments.ts";
 import { ThinkingShimmer } from "@/components/agents/loading-states/thinking-shimmer";
 import { Message, MessageContent } from "@/components/agents/message";
@@ -10,6 +10,7 @@ import { PromptInput } from "@/components/agents/prompt-input";
 import { Button } from "@/components/motion/button";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
+import { ChatSidebar } from "./chat-sidebar";
 import { LiveStatus } from "./live-status";
 import { useBecodeAgent } from "./use-becode-agent";
 
@@ -22,6 +23,14 @@ export function AgentChat() {
   const lastMessage = agent.messages.at(-1);
   const isPendingAssistantShell = lastMessage?.role === "assistant" && lastMessage.parts.length === 0;
   const showPendingThinking = isBusy && isPendingAssistantShell;
+
+  const [liveBranch, setLiveBranch] = useState<string>();
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // A finished turn is when a new chat first has a title worth listing.
+  useEffect(() => {
+    if (agent.status === "ready") setReloadKey((key) => key + 1);
+  }, [agent.status]);
 
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string>();
@@ -143,75 +152,88 @@ export function AgentChat() {
   );
 
   return (
-    <main className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {isEmpty ? null : (
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 px-4 sm:px-6">
-          <span className="truncate text-muted-foreground text-sm">{AGENT_NAME}</span>
-          <LiveStatus />
-        </header>
-      )}
+    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+      <ChatSidebar
+        activeChatId={agent.openChatId}
+        activeProjectId={agent.projectId}
+        liveBranch={liveBranch}
+        onNewChat={agent.startNew}
+        onOpenChat={agent.open}
+        reloadKey={reloadKey}
+      />
 
-      {agent.error ? (
-        <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-2 sm:px-6">
-          <div
-            className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm"
-            role="alert"
-          >
-            <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
-            <div>
-              <p className="font-medium">Request failed</p>
-              <p className="mt-0.5 text-muted-foreground">{agent.error}</p>
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 px-4 sm:px-6">
+          <span className="truncate text-muted-foreground text-sm">
+            {agent.projectId ? `${AGENT_NAME} · ${agent.projectId}` : AGENT_NAME}
+          </span>
+          <LiveStatus onBranch={setLiveBranch} />
+        </header>
+
+        {agent.error ? (
+          <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-2 sm:px-6">
+            <div
+              className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm"
+              role="alert"
+            >
+              <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+              <div>
+                <p className="font-medium">Request failed</p>
+                <p className="mt-0.5 text-muted-foreground">{agent.error}</p>
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
-
-      {isEmpty ? null : (
-        <MessageScroller
-          busy={isBusy}
-          className="min-h-0 flex-1"
-          contentClassName="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6"
-          label={`${AGENT_NAME} transcript`}
-        >
-          {agent.messages.map((message) =>
-            showPendingThinking && message.id === lastMessage?.id ? null : (
-              <AgentMessage
-                canRespond={!isBusy || agent.status === "streaming"}
-                key={message.id}
-                message={message}
-                onRespond={agent.respond}
-              />
-            ),
-          )}
-          {showPendingThinking ? (
-            <Message aria-live="polite" from="assistant">
-              <MessageContent>
-                <ThinkingShimmer>Thinking</ThinkingShimmer>
-              </MessageContent>
-            </Message>
-          ) : null}
-        </MessageScroller>
-      )}
-
-      <div
-        className={cn(
-          "mx-auto w-full px-4 sm:px-6",
-          isEmpty
-            ? "flex max-w-xl flex-1 flex-col items-center justify-center gap-8 pb-[10vh]"
-            : "max-w-3xl shrink-0 pb-6",
-        )}
-      >
-        {isEmpty ? (
-          <div className="flex flex-col items-center gap-3 text-center">
-            <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
-            <p className="text-balance text-muted-foreground">
-              Describe a change. You will see it running before it becomes a pull request.
-            </p>
-          </div>
         ) : null}
-        {composer}
-      </div>
-    </main>
+
+        {isEmpty ? null : (
+          <MessageScroller
+            busy={isBusy}
+            className="min-h-0 flex-1"
+            contentClassName="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6"
+            label={`${AGENT_NAME} transcript`}
+          >
+            {agent.messages.map((message) =>
+              showPendingThinking && message.id === lastMessage?.id ? null : (
+                <AgentMessage
+                  canRespond={!isBusy || agent.status === "streaming"}
+                  key={message.id}
+                  message={message}
+                  onRespond={agent.respond}
+                />
+              ),
+            )}
+            {showPendingThinking ? (
+              <Message aria-live="polite" from="assistant">
+                <MessageContent>
+                  <ThinkingShimmer>Thinking</ThinkingShimmer>
+                </MessageContent>
+              </Message>
+            ) : null}
+          </MessageScroller>
+        )}
+
+        <div
+          className={cn(
+            "mx-auto w-full px-4 sm:px-6",
+            isEmpty
+              ? "flex max-w-xl flex-1 flex-col items-center justify-center gap-8 pb-[10vh]"
+              : "max-w-3xl shrink-0 pb-6",
+          )}
+        >
+          {isEmpty ? (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
+              <p className="text-balance text-muted-foreground">
+                {agent.projectId
+                  ? `Describe a change to ${agent.projectId}. You will see it running before it becomes a pull request.`
+                  : "Describe a change. You will see it running before it becomes a pull request."}
+              </p>
+            </div>
+          ) : null}
+          {composer}
+          </div>
+      </main>
+    </div>
   );
 }
 
