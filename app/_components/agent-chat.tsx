@@ -1,7 +1,7 @@
 "use client";
 
-import { AlertCircleIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { AlertCircleIcon, CheckIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ACCEPT, type Attachment, isAllowed, MAX_FILES } from "@/agent/lib/attachments.ts";
 import { ThinkingShimmer } from "@/components/agents/loading-states/thinking-shimmer";
 import { Message, MessageContent } from "@/components/agents/message";
@@ -23,6 +23,29 @@ export function AgentChat() {
   const lastMessage = agent.messages.at(-1);
   const isPendingAssistantShell = lastMessage?.role === "assistant" && lastMessage.parts.length === 0;
   const showPendingThinking = isBusy && isPendingAssistantShell;
+
+  /**
+   * Whether there is anything to ship, read off the transcript the client already holds.
+   *
+   * A successful `Edit`/`Write` means a change reached disk — they are gated, so success is the
+   * proof — and a successful PR means it left. Derived rather than polled: a reopened chat replays
+   * through the same reducer, so this is right there too, and gate 3 is the one that actually
+   * decides. `start_task` would be the wrong signal: a policy refusal is still a successful call.
+   *
+   * The tool name is spelled out rather than imported from `TOOL` in agent/sdk/tools.ts — that
+   * module spawns processes and opens sqlite, and this is a client component.
+   */
+  const shippable = useMemo(() => {
+    let ready = false;
+    for (const message of agent.messages) {
+      for (const part of message.parts) {
+        if (part.type !== "tool" || part.state !== "success") continue;
+        if (part.name === "Edit" || part.name === "Write") ready = true;
+        else if (part.name === "mcp__becode__open_pull_request") ready = false;
+      }
+    }
+    return ready;
+  }, [agent.messages]);
 
   const [liveBranch, setLiveBranch] = useState<string>();
   const [reloadKey, setReloadKey] = useState(0);
@@ -72,6 +95,21 @@ export function AgentChat() {
 
   const composer = (
     <div className="w-full">
+      {shippable ? (
+        <div className="mb-2 flex">
+          <Button
+            disabled={isBusy}
+            onClick={() => void agent.send("Looks good. Open the pull request.")}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <CheckIcon className="size-3.5" />
+            Ship this change
+          </Button>
+        </div>
+      ) : null}
+
       <div
         className={cn(
           "rounded-2xl border border-border/80 bg-background p-2 transition-colors focus-within:border-foreground/25",

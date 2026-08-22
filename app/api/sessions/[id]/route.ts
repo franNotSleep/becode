@@ -1,4 +1,7 @@
 import { deleteSession, getSessionMessages, renameSession } from "@anthropic-ai/claude-agent-sdk";
+import { findProject } from "@/agent/lib/db.ts";
+import { removeWorktree } from "@/agent/lib/git.ts";
+import { forgetChat } from "@/agent/lib/task.ts";
 import { replayEvents } from "@/agent/sdk/transcript.ts";
 
 export const runtime = "nodejs";
@@ -23,8 +26,20 @@ export async function PATCH(request: Request, { params }: Context) {
   return Response.json({ ok: true });
 }
 
+/** Deleting the chat deletes what it was working in: nobody else can reach that worktree. */
 export async function DELETE(_request: Request, { params }: Context) {
   const { id } = await params;
+
+  const task = forgetChat(id);
+  if (task) {
+    try {
+      // Already gone, project since removed, whatever — the chat still has to delete.
+      await removeWorktree(findProject(task.projectId).path, task.worktree);
+    } catch {
+      // Nothing the person can do about it from here.
+    }
+  }
+
   await deleteSession(id);
   return Response.json({ ok: true });
 }

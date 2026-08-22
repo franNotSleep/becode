@@ -11,7 +11,7 @@ import { isListening } from "../lib/ports.ts";
 import { appUrls } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { activeTask, type Chat, resolveInWorktree } from "../lib/task.ts";
+import { activeTask, type Chat, resolveInWorktree, setTask } from "../lib/task.ts";
 import { judgeRequest } from "./judge.ts";
 
 const exec = promisify(execFile);
@@ -92,7 +92,7 @@ export function becodeTools(chat: Chat) {
         baseBranch: project.baseBranch,
       });
 
-      chat.task = { projectId: id, request, worktree: dir, branch };
+      setTask(chat, { projectId: id, request, worktree: dir, branch });
 
       const designSystem = await Promise.all(
         (project.designSystem ?? []).map(async (rel) => {
@@ -346,7 +346,7 @@ export function becodeTools(chat: Chat) {
       );
 
       const url = stdout.trim().split("\n").pop() ?? "";
-      chat.task = null;
+      setTask(chat, null);
 
       // The apps were serving this worktree. Left running, the next task would show its code.
       // Only this chat's, though — another chat may have taken the ports since.

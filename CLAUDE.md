@@ -174,6 +174,21 @@ run around the chat's state. A new chat has no session id when its query starts,
 the object and registers it under the id the init message reports — tool calls always come after
 init, so `start_task` is never slot-less.
 
+**The `Map` is a cache over a sqlite row, not the record.** It was the record, and that cost a
+chat its worktree every time `next dev` re-evaluated the module — which is every save. The chat
+resumed, `chat.task` came back `null`, `run_project` answered "No task started", `cwd` fell back to
+the source checkout, and the model's only legal move was `start_task` again: `freeName` saw the old
+directory, cut `<slug>-2` fresh off the base branch, and the previous turn's edits sat in a
+directory nobody would open again. Fifteen of them accumulated for one change. `setTask` writes on
+the two assignments that matter rather than at end-of-turn — a reload lands mid-turn as often as
+between them — and `chatFor` stats the worktree before it trusts a row, so one deleted by hand
+comes back as `task: null` instead of a path every read denies.
+
+**Deleting a chat deletes its worktree.** `DELETE /api/sessions/[id]` calls `forgetChat`, which
+hands back what the chat owned, and `removeWorktree` runs on it — the function's first caller. The
+same chat is keyed under every session id it ever reported, so siblings are left pointing at a
+directory that is now gone; the stat in `chatFor` is what makes that harmless.
+
 **History is not becode's to store.** The Agent SDK keeps every session on disk — the same store
 `resume` reads — and exports `listSessions({dir})`, `getSessionMessages`, `renameSession`,
 `deleteSession` and `tagSession`. `listSessions` groups by project directory and follows git
@@ -362,6 +377,13 @@ Two notes:
   upload *queue* — progress, retry, per-file state — for a flow that has no upload step.
   One consequence of not forking: the composer will not submit an empty textarea, so an
   attachment always needs a word beside it.
+- **"Ship this change"** is a `Button size="sm"` above the composer — already a pill
+  (`h-8 px-3 rounded-full`), no new component. It calls `agent.send` directly, so the empty-textarea
+  rule above does not apply to it. It appears when the transcript holds a successful `Edit`/`Write`
+  with no successful `open_pull_request` after it — derived from the messages the client already
+  has, so a reopened chat gets it too and there is no second poll. `start_task` would be the wrong
+  signal: a policy refusal is still a successful call. The pill replaces the typing, not the
+  confirmation — gate 3 still judges the real diff and still renders the approval card.
 - **The sidebar is hand-rolled.** `@beui/ai-sidebar` was installed and removed: no trailing-action
   slot for the `+`, no controlled expansion (a collapsed row cannot be reopened from state), and a
   drag-to-move affordance that would be a lie — a chat belongs to the worktree it created. Three
@@ -405,7 +427,7 @@ npm run typecheck            # tsc --noEmit
 npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
 npm run check:boot           # port math, liveness, and the env-file copy — no servers started
 npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
-npm run check:db             # the project store: seeding, round-trip, duplicate ids
+npm run check:db             # the store: project round-trip, and a chat keeping its worktree
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
@@ -458,7 +480,7 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   empties while the dev servers keep running. The exit handler still reaps them (the old module's
   closure fires), and the port gate catches the duplicates, so it degrades rather than breaks — but
   the bar goes blank mid-session. Not a concern under `npm start`.
-- **Nothing survives a restart.** The `Chat` map is in-process, so a becode restart forgets which
-  worktree a chat owns — the chat still resumes (the SDK stores it), but `start_task` would refuse
-  a second one against a task it no longer knows about. `apps/tixqa/server/db.ts` is the precedent
-  if that starts to hurt; `node:sqlite` is in Node 24 with no dependency.
+- **A restart still orphans the dev servers.** The `Chat` rows survive it now, but `live` and
+  `appOwner` in `tools.ts` do not, so the apps from before the restart keep their ports with
+  nothing tracking them. The port gate catches it and asks before killing them, which is the
+  behaviour — just not a pleasant one.

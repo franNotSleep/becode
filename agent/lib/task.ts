@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import { findProject } from "./db.ts";
+import { deleteChatState, findProject, loadChatState, saveChatState } from "./db.ts";
 import type { Project } from "./projects.ts";
 
 export type Task = {
@@ -17,9 +18,11 @@ export type Task = {
  * receives `extra: unknown` — the SDK hands it no session id, so there is nothing to look up by.
  * `agent/sdk/tools.ts` is therefore a factory, built once per run around one of these.
  *
- * ponytail: a Map in one process, not a store. becode is one local process serving one person at
- * one screen; nothing here survives a restart, and a task mid-review does not need to.
- * apps/tixqa/server/db.ts is the precedent if that ever changes.
+ * The `Map` is a cache in front of a sqlite row, not the record. It used to be the record, and
+ * that lost a chat its worktree every time `next dev` re-evaluated this module — the chat resumed
+ * (the SDK stores the transcript), came back with `task: null`, and the model had no move left but
+ * `start_task`, which cut a second worktree off the base branch and stranded the edits in the
+ * first. Same store as the projects: `~/.becode/becode.db`.
  */
 export type Chat = {
   /** Filled from the SDK's init message. Absent until the first turn of a new chat reports one. */
@@ -39,8 +42,20 @@ const chats = new Map<string, Chat>();
 
 /** The state for a chat, resumed by session id or fresh. */
 export function chatFor(sessionId: string | undefined): Chat {
-  const existing = sessionId ? chats.get(sessionId) : undefined;
-  return existing ?? { task: null };
+  if (!sessionId) return { task: null };
+
+  const cached = chats.get(sessionId);
+  if (cached) return cached;
+
+  const stored = loadChatState(sessionId);
+  if (!stored) return { task: null };
+
+  // A worktree someone deleted by hand must not come back as a path every read denies. Dropping
+  // the task leaves a chat that can start a new one, which is the only useful state left.
+  if (stored.task && !fs.existsSync(stored.task.worktree)) stored.task = null;
+
+  chats.set(sessionId, stored);
+  return stored;
 }
 
 /**
@@ -52,6 +67,32 @@ export function chatFor(sessionId: string | undefined): Chat {
 export function rememberChat(chat: Chat, sessionId: string): void {
   chat.sessionId = sessionId;
   chats.set(sessionId, chat);
+  saveChatState(sessionId, chat);
+}
+
+/**
+ * Start or end this chat's task, and write it down.
+ *
+ * Persisted here rather than at the end of the turn: an HMR reload lands mid-turn as often as
+ * between them, and a task that only reaches disk once the turn finishes is the bug this fixes.
+ */
+export function setTask(chat: Chat, task: Task): void {
+  chat.task = task;
+  if (chat.sessionId) saveChatState(chat.sessionId, chat);
+}
+
+/**
+ * Forget a chat, and hand back what it owned so the caller can clean up after it.
+ *
+ * Only the row asked for: `rememberChat` keys one chat under every session id it has reported, so
+ * siblings are left pointing at a worktree that is about to go. `chatFor` stats before it trusts
+ * one, which turns those into `task: null`.
+ */
+export function forgetChat(sessionId: string): Task {
+  const chat = chatFor(sessionId);
+  chats.delete(sessionId);
+  deleteChatState(sessionId);
+  return chat.task;
 }
 
 export function activeTask(chat: Chat): { task: NonNullable<Task>; project: Project } {

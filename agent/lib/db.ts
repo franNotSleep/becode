@@ -15,6 +15,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projects as seed } from "../../becode.projects.ts";
 import type { Project } from "./projects.ts";
+import type { Chat } from "./task.ts";
 
 const FILE = process.env.BECODE_DB ?? path.join(os.homedir(), ".becode", "becode.db");
 
@@ -28,6 +29,12 @@ CREATE TABLE IF NOT EXISTS projects (
   id         TEXT PRIMARY KEY,
   config     TEXT NOT NULL,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+  session_id TEXT PRIMARY KEY,
+  state      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );`;
 
 let handle: DatabaseSync | undefined;
@@ -86,4 +93,32 @@ export function addProject(project: Project): void {
     throw new Error(`A project called "${project.id}" already exists.`);
   }
   insert(database, project);
+}
+
+/**
+ * A chat's server-side state, keyed by session id.
+ *
+ * The worktree a chat owns used to live only in a `Map`, which `next dev` empties on every HMR
+ * reload — the chat came back with `task: null`, so the model's only legal move was `start_task`
+ * again and the previous turn's edits were stranded in a directory nobody would look at again.
+ * Same JSON-in-a-column shape as `projects`: `Chat` in task.ts already owns it.
+ */
+export function loadChatState(sessionId: string): Chat | undefined {
+  const row = db().prepare("SELECT state FROM chats WHERE session_id = ?").get(sessionId) as
+    | { state: string }
+    | undefined;
+  return row ? (JSON.parse(row.state) as Chat) : undefined;
+}
+
+export function saveChatState(sessionId: string, chat: Chat): void {
+  db()
+    .prepare(
+      "INSERT INTO chats (session_id, state, updated_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT(session_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+    )
+    .run(sessionId, JSON.stringify(chat), Date.now());
+}
+
+export function deleteChatState(sessionId: string): void {
+  db().prepare("DELETE FROM chats WHERE session_id = ?").run(sessionId);
 }
