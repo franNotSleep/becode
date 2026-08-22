@@ -382,6 +382,15 @@ const serverUp = async (server: Server) =>
  * with EADDRINUSE against becode itself. Apps never hit it because they are given an explicit
  * PORT; services are given none, so they inherited it.
  *
+ * `__NEXT_*` is the same bug with a nastier face. becode is a Next app, so loading its own
+ * `.env.local` sets `__NEXT_PROCESSED_ENV=true` — and `@next/env` reads that as "someone already
+ * applied the env", returning before it assigns anything. A target Next app inheriting it still
+ * *lists* `.env.local` in its startup banner and still applies none of it, so the storefront booted
+ * with `NEXT_PUBLIC_API_BASE` undefined, `apiBase()` threw inside every query, and the app made
+ * zero requests to the backend with nothing in the console. tixvendor was fine because Vite reads
+ * its own env. `NEXT_*` goes too: becode's own public vars would otherwise be inlined into a
+ * target's bundle. Everything a target needs is in its own env files, which the worktree gets.
+ *
  * The credentials go too. becode's token is for becode; a target repo's dev server has no business
  * being handed it just because it happens to be a child process.
  */
@@ -391,7 +400,11 @@ export function childEnv(
 ): NodeJS.ProcessEnv {
   const inherited = { ...base };
   for (const key of ["PORT", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]) delete inherited[key];
-  for (const key of Object.keys(inherited)) if (key.startsWith("BECODE_")) delete inherited[key];
+  for (const key of Object.keys(inherited)) {
+    if (key.startsWith("BECODE_") || key.startsWith("NEXT_") || key.startsWith("__NEXT_")) {
+      delete inherited[key];
+    }
+  }
   return { ...inherited, ...overrides };
 }
 

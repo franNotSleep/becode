@@ -42,6 +42,17 @@ assert.equal(env.BECODE_MAX_TURNS, undefined, "nor its own settings");
 assert.equal(env.PATH, "/usr/bin", "everything else is passed through");
 assert.equal(childEnv({ ...process.env, PORT: "4000" }, { PORT: "3002" }).PORT, "3002", "an explicit port still wins");
 
+// Next's own internals are the worst of them: `__NEXT_PROCESSED_ENV` makes a target Next app list
+// its .env.local and apply none of it, so NEXT_PUBLIC_* comes out undefined and the app silently
+// talks to nothing. becode sets it on itself the moment it loads its own env.
+const nextEnv = childEnv(
+  { ...process.env, __NEXT_PROCESSED_ENV: "true", NEXT_PUBLIC_API_BASE: "http://becode", NEXT_RUNTIME: "nodejs" },
+  {},
+);
+assert.equal(nextEnv.__NEXT_PROCESSED_ENV, undefined, "a target's own .env must still be applied");
+assert.equal(nextEnv.NEXT_PUBLIC_API_BASE, undefined, "becode's public vars never reach a target bundle");
+assert.equal(nextEnv.NEXT_RUNTIME, undefined, "nor anything else Next set on becode's process");
+
 // Liveness: running and clean-exit one-shots are up; a crash or a kill is not.
 const isUp = (child: { signalCode: string | null; exitCode: number | null }) =>
   child.signalCode === null && (child.exitCode === null || child.exitCode === 0);
