@@ -11,7 +11,7 @@ import path from "node:path";
 const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "becode-db-")), "becode.db");
 process.env.BECODE_DB = file;
 
-const { addProject, allProjects, findProject } = await import("./db.ts");
+const { addProject, allProjects, findProject, saveProject } = await import("./db.ts");
 const { projects: seed } = await import("../../becode.projects.ts");
 
 // First open on a fresh machine takes becode.projects.ts as the starting set, whole.
@@ -26,7 +26,7 @@ const discovered = {
   baseBranch: "main",
   install: "npm ci",
   apps: [{ name: "web", command: "npm run dev -- --port $PORT", port: 5173 }],
-  services: [{ name: "queue", command: "docker compose up -d" }],
+  services: [{ name: "queue", command: "docker compose up -d" }, { name: "api", command: "npm run api", port: 4010 }],
   designSystem: ["src/styles/tokens.css"],
 };
 addProject(discovered);
@@ -35,6 +35,12 @@ assert.equal(allProjects().length, seed.length + 1);
 
 // A duplicate id would silently replace a working recipe, so it does not.
 assert.throws(() => addProject(discovered), /already exists/);
+
+// saveProject is the deliberate edit — a seeded row learning a field it did not have.
+saveProject({ ...discovered, baseBranch: "trunk" });
+assert.equal(findProject("scraper").baseBranch, "trunk");
+assert.equal(allProjects().length, seed.length + 1, "an update is not a second row");
+assert.equal(findProject("scraper").services?.[1].port, 4010, "a service port survives the round trip");
 
 // Seeding happens once: a second open of the same file must not double up.
 assert.equal(allProjects().filter((p) => p.id === seed[0].id).length, 1);

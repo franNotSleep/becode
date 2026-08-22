@@ -16,7 +16,7 @@ export const projects = defineProjects([
     // The backend's own .env pins it to :3031, which both apps already point at.
     services: [
       { name: "database", command: "docker compose -f apps/tixbackend/docker-compose.yml up -d" },
-      { name: "backend", command: "pnpm dev:backend" },
+      { name: "backend", command: "pnpm dev:backend", port: 3031 },
     ],
     // Both apps' own dev scripts pin a port, which would ignore $PORT — bypass them.
     apps: [

@@ -1,18 +1,37 @@
 "use client";
 
+import { ExternalLinkIcon, ScrollTextIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+  MorphPopover,
+  MorphPopoverContent,
+  MorphPopoverTrigger,
+} from "@/components/motion/popover-morph";
+import { cn } from "@/lib/utils";
+import { ServerLogs } from "./server-logs";
 
-type Status = { branch?: string; servers: { name: string; url?: string }[] };
+type Server = {
+  name: string;
+  url?: string;
+  running: boolean;
+  exitCode: number | null;
+  pid?: number;
+};
+type Status = { branch?: string; servers: Server[] };
 
 /**
  * Whether the target project is actually up, and where to look at it.
  *
  * ponytail: polls a route rather than opening a second stream — the source of truth is the
  * child processes on the server, and one dot does not need a socket. Nothing shows until
- * something is running, so an idle becode has no chrome.
+ * something has been started, so an idle becode has no chrome.
+ *
+ * A server that has died still appears, in red. Filtering to the healthy ones made a crashed
+ * backend *vanish* from the bar, which is the opposite of what a status indicator is for.
  */
 export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string) => void }) {
   const [status, setStatus] = useState<Status>({ servers: [] });
+  const [logsFor, setLogsFor] = useState<string>();
 
   useEffect(() => {
     const tick = () =>
@@ -31,33 +50,83 @@ export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string)
 
   if (status.servers.length === 0) return null;
 
-  const apps = status.servers.filter((server) => server.url);
-  const services = status.servers.filter((server) => !server.url);
+  const anyDown = status.servers.some((server) => !server.running);
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-xs">
       <span aria-hidden className="relative flex size-2 shrink-0">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60" />
-        <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+        {anyDown ? (
+          <span className="relative inline-flex size-2 rounded-full bg-destructive" />
+        ) : (
+          <>
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-500/60" />
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+          </>
+        )}
       </span>
       <span className="sr-only">Running:</span>
-      {services.length > 0 ? (
-        <span className="hidden truncate text-muted-foreground sm:inline">
-          {services.map((service) => service.name).join(" · ")}
-        </span>
-      ) : null}
-      {apps.map((app) => (
-        <a
-          className="shrink-0 rounded-md border px-2 py-1 transition-colors hover:bg-accent"
-          href={app.url}
-          key={app.name}
-          rel="noreferrer"
-          target="_blank"
-        >
-          {app.name}
-          <span className="ml-1 text-muted-foreground">:{new URL(app.url!).port}</span>
-        </a>
+
+      {status.servers.map((server) => (
+        <ServerChip key={server.name} onLogs={() => setLogsFor(server.name)} server={server} />
       ))}
+
+      <ServerLogs name={logsFor} onOpenChange={(open) => !open && setLogsFor(undefined)} />
     </div>
+  );
+}
+
+/** One server. Clicking it offers the two things you can do with it: look at it, or read it. */
+function ServerChip({ onLogs, server }: { readonly onLogs: () => void; readonly server: Server }) {
+  const [open, setOpen] = useState(false);
+  const row =
+    "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm outline-none transition-colors hover:bg-muted focus-visible:bg-muted";
+
+  return (
+    <MorphPopover onOpenChange={setOpen} open={open}>
+      <MorphPopoverTrigger>
+        <button
+          className={cn(
+            "shrink-0 rounded-md border px-2 py-1 transition-colors hover:bg-accent",
+            server.running ? "text-foreground" : "border-destructive/40 text-destructive",
+          )}
+          type="button"
+        >
+          {server.name}
+          <span className={cn("ml-1", server.running ? "text-muted-foreground" : "text-destructive/70")}>
+            {server.running
+              ? server.url
+                ? `:${new URL(server.url).port}`
+                : "up"
+              : `exited ${server.exitCode ?? ""}`}
+          </span>
+        </button>
+      </MorphPopoverTrigger>
+
+      <MorphPopoverContent align="end" className="w-52 p-1.5" radius={12} side="bottom" sideOffset={8}>
+        {server.url ? (
+          <a
+            className={row}
+            href={server.url}
+            onClick={() => setOpen(false)}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <ExternalLinkIcon className="size-4 text-muted-foreground" />
+            Open {server.name}
+          </a>
+        ) : null}
+        <button
+          className={row}
+          onClick={() => {
+            setOpen(false);
+            onLogs();
+          }}
+          type="button"
+        >
+          <ScrollTextIcon className="size-4 text-muted-foreground" />
+          Logs
+        </button>
+      </MorphPopoverContent>
+    </MorphPopover>
   );
 }

@@ -38,6 +38,9 @@ They will look at the running app and say yes or no. Optimize for that.
   component, use it. Inventing a new hex value, a one-off spacing, or a duplicate component is a
   defect, not a shortcut.
 - **Show, don't describe.** "I changed the padding" is not an answer. A running URL is.
+- **Do not report something is working when it isn't.** If `run_project` says a service is down, or
+  the app looks wrong, call `read_logs` and say what it actually reported. The person cannot read
+  the server's output for you and will not know to ask.
 
 ## Your tools
 
@@ -80,7 +83,8 @@ Two things decide whether the recipe is right:
   if the repo's own script pins a port, bypass it and call the underlying tool directly. `port` is
   the one the repo's env files and any CORS allowlist already expect; do not invent a free one.
 - **services** are what the apps need up first — db, queue, api. They run from the source checkout
-  on fixed ports and are shared, so they never take `$PORT`.
+  on fixed ports and are shared, so they never take `$PORT`. Do give a service's `port` when its env
+  pins one: it is never substituted, it is what lets becode notice a stale copy squatting there.
 
 Then call `propose_project`. The person confirms it before anything is saved; if they say no, ask
 what is wrong with the recipe rather than proposing the same thing again.

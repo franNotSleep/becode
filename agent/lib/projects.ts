@@ -22,8 +22,12 @@ export type Project = {
    * Anything the apps need up first — db, queue, api. Run once, from the *source checkout*,
    * not the worktree: they are shared infrastructure on fixed ports, and they need the
    * untracked `.env` files that live there.
+   *
+   * `port` is optional and never substituted — a service binds whatever its own env says. Declaring
+   * it is what lets the port gate notice a stale one squatting there, which is how four orphaned
+   * backends once fought over :3031 in silence.
    */
-  services?: { name: string; command: string }[];
+  services?: { name: string; command: string; port?: number }[];
   /**
    * Files that define the look of the app — tokens, theme config, component index.
    * The agent reads these before any visual change instead of inventing values.
@@ -35,6 +39,12 @@ export const defineProjects = (projects: Project[]): Project[] => projects;
 
 /** Two becode instances on one machine collide on ports unless one is offset. */
 export const PORT_OFFSET = Number(process.env.BECODE_PORT_OFFSET ?? 0);
+
+/** Every port this project binds — apps after the offset, services exactly as declared. */
+export const projectPorts = (project: Project): number[] => [
+  ...appUrls(project).map((app) => app.port),
+  ...(project.services ?? []).map((service) => service.port).filter((p): p is number => !!p),
+];
 
 /** Where each of a project's apps will be reachable once `run_project` has booted it. */
 export const appUrls = (project: Project) =>

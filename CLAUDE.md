@@ -194,6 +194,32 @@ Reopening a chat replays it as the **same event stream** a live turn produces
 (`agent/sdk/transcript.ts` walks the blocks once, for both), folded by the same client reducer. A
 replayed tool row cannot render differently from the one that streamed.
 
+## Seeing what is running, and why it isn't
+
+**"Running" means the port answers.** The process alone is not evidence: `shell: true` makes becode's
+child `/bin/sh -c ...` and the dev server its grandchild, so the shell outlives a server that
+crashed under it. `serverUp` in `tools.ts` requires the declared port to accept a connection
+(`isListening` in `agent/lib/ports.ts`, both address families — vite binds `[::1]` and answers on
+nothing else). This is why services declare a `port`: without one there is nothing to check.
+
+**Nothing is filtered out for being broken.** `liveStatus()` used to return only what was up, so a
+crashed backend *vanished* from the bar instead of showing as broken — the person was left with no
+sign anything was wrong and nothing to click. It now returns everything, with `running`, `exitCode`
+and `pid`, and `run_project` restarts anything that is not actually serving rather than skipping it
+as "already up".
+
+**The output is kept.** `agent/lib/logs.ts` is a 256KB ring buffer per process with an **absolute**
+cursor, so a reader asks only for what it has not seen and is told when it fell behind. The old
+buffer was forty chunks with `shift()` — seconds for a Nest boot, so whatever killed it was gone
+before anyone looked. `GET /api/agent/logs?name=&from=` backs a 1s poll from the modal
+(`app/_components/server-logs.tsx`); the agent reads the same buffer through `read_logs`.
+
+**becode's own environment does not reach a target's servers.** `next dev` sets
+`process.env.PORT = 4000` (`start-server.js`), and children inherited it — so the tix backend bound
+becode's own port instead of the 3031 in its `.env` and died with EADDRINUSE, invisibly, for as long
+as this repo has existed. `childEnv` strips `PORT`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`
+and `BECODE_*`; an explicit override still wins, which is how apps get their port.
+
 **Apps are detached, and reaped on exit.** `spawn(..., {shell: true})` makes the child `/bin/sh -c`
 and the dev server its *grandchild*, so `child.kill()` took down the shell and left the server
 holding :3002. Apps now run `detached: true` — their own process group — and are stopped with
@@ -201,8 +227,10 @@ holding :3002. Apps now run `detached: true` — their own process group — and
 without it a becode that stops leaves a dev server on the port that the next run cannot see, cannot
 kill, and cannot boot past. Services are left alone; they are shared and every task needs them.
 
-**A port becode did not take is a question, not an error.** If an app's port is held by a pid
-outside `ownedPids()` — a leftover from a becode that crashed, or the person's own `next dev` —
+**A port becode did not take is a question, not an error.** If a port is held by a process whose
+**group** is outside `ownedPids()` — matching on pid alone flags becode's own apps, since it tracks
+the shell and the listener is that shell's grandchild — a leftover from a becode that crashed, or
+the person's own `next dev` —
 `canUseTool` names the processes and asks before stopping them (`agent/lib/ports.ts`, `check:ports`).
 Killing blind is not becode's call; retrying forever is what it used to do instead.
 
@@ -380,6 +408,7 @@ npm run check:attachments    # the attachment allowlist and its caps — video r
 npm run check:db             # the project store: seeding, round-trip, duplicate ids
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run check:ports          # finds and frees a real listener — starts one, kills it
+npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires
@@ -425,6 +454,10 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   worktree each. Not solved for the *ports*: `run_project` takes them over rather than allocating a
   block per task, because the backend's CORS allowlist names :3000 and :3002. Per-task ports means
   fixing that in the target repo first.
+- **`next dev` HMR forgets the children.** Editing `tools.ts` re-evaluates the module, so `live`
+  empties while the dev servers keep running. The exit handler still reaps them (the old module's
+  closure fires), and the port gate catches the duplicates, so it degrades rather than breaks — but
+  the bar goes blank mid-session. Not a concern under `npm start`.
 - **Nothing survives a restart.** The `Chat` map is in-process, so a becode restart forgets which
   worktree a chat owns — the chat still resumes (the SDK stores it), but `start_task` would refuse
   a second one against a task it no longer knows about. `apps/tixqa/server/db.ts` is the precedent

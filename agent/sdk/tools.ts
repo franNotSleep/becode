@@ -6,6 +6,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { addProject, allProjects, findProject } from "../lib/db.ts";
+import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts";
+import { isListening } from "../lib/ports.ts";
 import { appUrls } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
@@ -144,7 +146,17 @@ export function becodeTools(chat: Chat) {
           .min(1)
           .describe("The surfaces a person looks at. One URL each, started in the task worktree."),
         services: z
-          .array(z.object({ name: z.string(), command: z.string() }))
+          .array(
+            z.object({
+              name: z.string(),
+              command: z.string(),
+              port: z
+                .number()
+                .int()
+                .optional()
+                .describe("The port it binds, from its own env. Never substituted — read, not set."),
+            }),
+          )
           .optional()
           .describe("Db, queue, api. Started in the source checkout, shared across tasks."),
         designSystem: z
@@ -184,9 +196,18 @@ export function becodeTools(chat: Chat) {
 
       if (install && project.install) {
         await new Promise<void>((resolve, reject) => {
-          const p = spawn(project.install!, { cwd: current.worktree, shell: true, env: process.env });
+          const p = spawn(project.install!, { cwd: current.worktree, shell: true, env: childEnv(process.env, {}) });
           p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`install failed (exit ${code})`))));
         });
+      }
+
+      // Anything that is not actually serving is cleared out first, so "already up" cannot mean
+      // "its shell is alive". A `nest start --watch` whose server died leaves that shell running,
+      // and skipping it here reported the backend as restarted while :3031 stayed empty.
+      for (const [name, entry] of live) {
+        if (await serverUp(entry)) continue;
+        stop(entry.child);
+        live.delete(name);
       }
 
       // The ports are the only contended resource — worktrees are cheap and already isolated.
@@ -198,9 +219,8 @@ export function becodeTools(chat: Chat) {
       // Services run in the *source checkout*: fixed ports, shared across tasks, and they read
       // env files that only exist there. Starting a second copy would just fail to bind.
       for (const service of project.services ?? []) {
-        const existing = live.get(service.name);
-        if (existing && isUp(existing.child)) continue;
-        start(service.name, project.path, service.command, {});
+        if (live.has(service.name)) continue;
+        start(service.name, project.path, service.command, {}, undefined, service.port);
         started.push(service.name);
       }
 
@@ -209,9 +229,8 @@ export function becodeTools(chat: Chat) {
       const urls = appUrls(project);
       for (const [index, app] of project.apps.entries()) {
         const { port, url } = urls[index];
-        const existing = live.get(app.name);
-        if (existing && isUp(existing.child)) continue;
-        start(app.name, current.worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url);
+        if (live.has(app.name)) continue;
+        start(app.name, current.worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url, port);
         started.push(app.name);
       }
 
@@ -219,25 +238,83 @@ export function becodeTools(chat: Chat) {
       // blank page. A cold pnpm monorepo start is slower than a warm one, hence the generous wait.
       if (started.length > 0) await new Promise((r) => setTimeout(r, 12_000));
 
-      const report = [...live.values()].map((s) => ({
-        name: s.name,
-        url: s.url,
-        running: isUp(s.child),
-        ...(isUp(s.child) ? {} : { exitCode: s.child.exitCode, logs: s.logs.join("").slice(-1200) }),
-      }));
+      const report = await Promise.all(
+        [...live.values()].map(async (s) => {
+          const up = await serverUp(s);
+          return {
+            name: s.name,
+            url: s.url,
+            running: up,
+            ...(up ? {} : { exitCode: s.child.exitCode, logs: tail(s.logs, 1200) }),
+          };
+        }),
+      );
 
       const dead = report.filter((s) => !s.running);
       if (dead.some((s) => project.apps.some((a) => a.name === s.name))) {
         throw new Error(`Some apps failed to start:\n${JSON.stringify(dead, null, 2)}`);
       }
 
+      // A dead *service* does not throw — `docker compose up -d` exiting 0 is healthy — but it
+      // used to pass in silence, so the person was told everything was fine while the backend was
+      // down. Now the agent is handed the fact and can say it.
+      const brokenServices = dead.filter((s) => !project.apps.some((a) => a.name === s.name));
+
       return reply({
         branch: current.branch,
         started,
         servers: report,
         ...(displaced ? { note: `Stopped the apps that were showing ${displaced} — tell the user.` } : {}),
+        ...(brokenServices.length > 0
+          ? {
+              warning:
+                `${brokenServices.map((s) => s.name).join(", ")} is not running. The app may look ` +
+                `broken because of it. Call read_logs to find out why, and tell the user.`,
+            }
+          : {}),
       });
     },
+  );
+
+  const readLogs = tool(
+    "read_logs",
+    "Read the output of something becode is running — a dev server, the api, the database. Use it " +
+      "when run_project reports something is not running, or when the app misbehaves and you need " +
+      "to know why. Output is kept after a process dies, so the error that killed it is still here.",
+    {
+      name: z
+        .string()
+        .optional()
+        .describe("Server name from run_project. Omit for a short tail of every one."),
+    },
+    async ({ name }) => {
+      if (name) {
+        const server = live.get(name);
+        if (!server) {
+          throw new Error(
+            `Nothing called "${name}" is running. Known: ${[...live.keys()].join(", ") || "nothing yet"}.`,
+          );
+        }
+        return reply({
+          name,
+          running: await serverUp(server),
+          exitCode: server.child.exitCode,
+          logs: tail(server.logs, 8000) || "(no output yet)",
+        });
+      }
+
+      return reply(
+        await Promise.all(
+          [...live.values()].map(async (server) => ({
+            name: server.name,
+            running: await serverUp(server),
+            exitCode: server.child.exitCode,
+            logs: tail(server.logs, 1500) || "(no output yet)",
+          })),
+        ),
+      );
+    },
+    { annotations: { readOnlyHint: true } },
   );
 
   const openPullRequest = tool(
@@ -283,7 +360,7 @@ export function becodeTools(chat: Chat) {
     instructions:
       "becode's own tools. Everything else you need — reading, searching and editing the target " +
       "repo — is a built-in tool rooted at the task worktree.",
-    tools: [listProjects, startTask, runProject, openPullRequest, proposeProject],
+    tools: [listProjects, startTask, runProject, readLogs, openPullRequest, proposeProject],
   });
 }
 
@@ -296,7 +373,9 @@ export function becodeTools(chat: Chat) {
  * ponytail: an in-process map, not a supervisor. becode is one local process serving one
  * person; if it ever needs to survive a restart, move this to a pidfile in the worktree.
  */
-const live = new Map<string, { name: string; url?: string; child: ChildProcess; logs: string[] }>();
+type Server = { name: string; url?: string; port?: number; child: ChildProcess; logs: LogBuffer };
+
+const live = new Map<string, Server>();
 let appOwner: string | undefined;
 
 /**
@@ -336,13 +415,17 @@ export function ownedPids(): number[] {
 }
 
 /**
- * Apps are detached, so nothing else would ever stop them: a becode that exits without this leaves
- * a dev server holding :3002 that the next run cannot see, cannot kill, and cannot boot past.
- * Services stay — they are shared infrastructure and every task needs them.
+ * Children are detached, so nothing else would ever stop them: a becode that exits without this
+ * leaves a dev server holding :3002 that the next run cannot see, cannot kill, and cannot boot past.
+ *
+ * Services are included, unlike in the takeover. They are shared across *chats*, not across becode
+ * processes — `pnpm dev:backend` runs forever and gets reparented to init on every restart, which
+ * is how four of them ended up fighting over :3031. Killing an already-exited `docker compose up -d`
+ * is a no-op and its containers are not becode's children, so real shared infrastructure is safe.
  */
 for (const signal of ["exit", "SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
-    for (const entry of live.values()) if (entry.url) stop(entry.child);
+    for (const entry of live.values()) stop(entry.child);
     if (signal !== "exit") process.exit(0);
   });
 }
@@ -351,32 +434,95 @@ for (const signal of ["exit", "SIGINT", "SIGTERM"] as const) {
 const isUp = (child: ChildProcess) =>
   child.signalCode === null && (child.exitCode === null || child.exitCode === 0);
 
-function start(name: string, cwd: string, command: string, env: Record<string, string>, url?: string) {
+/**
+ * Whether the server is actually serving.
+ *
+ * The process alone is not enough: `shell: true` means becode holds `/bin/sh -c ...`, which
+ * survives the dev server dying underneath it. So a declared port has to answer too — otherwise
+ * the bar reports "running" at a port with nothing on it, which is the failure this whole thing
+ * exists to surface. No port declared means the process is all there is to go on.
+ */
+const serverUp = async (server: Server) =>
+  isUp(server.child) && (server.port === undefined || (await isListening(server.port)));
+
+/**
+ * becode's own environment, minus what a target's dev server must not inherit.
+ *
+ * `next dev` sets `process.env.PORT` to becode's own port (start-server.js), so a service that
+ * reads `PORT` — every Nest app does — bound :4000 instead of the 3031 in its `.env`, and crashed
+ * with EADDRINUSE against becode itself. Apps never hit it because they are given an explicit
+ * PORT; services are given none, so they inherited it.
+ *
+ * The credentials go too. becode's token is for becode; a target repo's dev server has no business
+ * being handed it just because it happens to be a child process.
+ */
+export function childEnv(
+  base: NodeJS.ProcessEnv,
+  overrides: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const inherited = { ...base };
+  for (const key of ["PORT", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]) delete inherited[key];
+  for (const key of Object.keys(inherited)) if (key.startsWith("BECODE_")) delete inherited[key];
+  return { ...inherited, ...overrides };
+}
+
+function start(
+  name: string,
+  cwd: string,
+  command: string,
+  env: Record<string, string>,
+  url?: string,
+  port?: number,
+) {
   // `detached` puts the app in its own process group. It has to: `shell: true` means the child is
   // `/bin/sh -c ...` and the dev server is its grandchild, so killing the child leaves the server
   // holding the port. Detaching is what makes `stop` able to take the whole group down — and it is
   // why the exit handler below exists, since a detached child would otherwise outlive becode.
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, detached: true });
+  const child = spawn(command, { cwd, shell: true, env: childEnv(process.env, env), detached: true });
   child.unref();
-  const logs: string[] = [];
-  const capture = (buf: Buffer) => {
-    logs.push(buf.toString());
-    if (logs.length > 40) logs.shift();
-  };
+  const logs = emptyBuffer();
+  const capture = (buf: Buffer) => append(logs, buf.toString());
   child.stdout?.on("data", capture);
   child.stderr?.on("data", capture);
-  const entry = { name, url, child, logs };
+  const entry = { name, url, port, child, logs };
   live.set(name, entry);
   return entry;
 }
 
-/** What the UI's live indicator reads. The child processes are the source of truth, not a flag. */
-export function liveStatus() {
-  const servers = [...live.values()]
-    .filter((s) => isUp(s.child))
-    .map((s) => ({ name: s.name, url: s.url }));
-  return { branch: servers.some((s) => s.url) ? appOwner : undefined, servers };
+/**
+ * What the UI's live indicator reads. The child processes are the source of truth, not a flag.
+ *
+ * Everything is reported, running or not. Filtering to the healthy ones made a crashed backend
+ * *disappear* from the bar rather than show as broken — which is the opposite of what a status
+ * indicator is for, and left the person with nothing to click.
+ */
+export async function liveStatus() {
+  const servers = await Promise.all(
+    [...live.values()].map(async (s) => ({
+      name: s.name,
+      url: s.url,
+      running: await serverUp(s),
+      exitCode: s.child.exitCode,
+      pid: s.child.pid,
+    })),
+  );
+  return { branch: servers.some((s) => s.url && s.running) ? appOwner : undefined, servers };
 }
+
+/** One server's output from a reader's cursor onward. Backs the log route's poll. */
+export async function readServerLog(name: string, from: number) {
+  const server = live.get(name);
+  if (!server) return null;
+  return {
+    name,
+    url: server.url,
+    running: await serverUp(server),
+    exitCode: server.child.exitCode,
+    pid: server.child.pid,
+    ...since(server.logs, from),
+  };
+}
+
 
 /** Tool names as the model sees them, for the permission gate. */
 export const TOOL = {

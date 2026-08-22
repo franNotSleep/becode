@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { holders, release } from "./ports.ts";
+import { holders, isListening, release } from "./ports.ts";
 
 /** A port nothing is on right now, asked of the OS rather than guessed. */
 const freePort = () =>
@@ -23,6 +23,7 @@ const freePort = () =>
 
 const port = await freePort();
 assert.deepEqual(await holders(port), [], "a free port has no holders");
+assert.equal(await isListening(port), false, "nothing answers on a free port");
 
 // Detached, through a shell, exactly how run_project starts an app — so the listener is a
 // grandchild and the process-group kill is the path being checked.
@@ -39,8 +40,14 @@ const found = await holders(port);
 assert.equal(found.length, 1, `expected one holder on :${port}, got ${JSON.stringify(found)}`);
 assert.match(found[0].command, /node/, "the holder is reported with its command line");
 assert.ok(found[0].pid > 0);
+// The listener is the shell's grandchild, so its pid differs from what a spawner tracks — the
+// process group is what ties them together.
+assert.equal(found[0].pgid, child.pid, "the holder is reported in its spawner's process group");
+
+assert.equal(await isListening(port), true, "the port answers while the server is up");
 
 assert.equal(await release(port, [found[0].pid]), true, "the port comes back free");
+assert.equal(await isListening(port), false, "and stops answering once it is gone");
 assert.deepEqual(await holders(port), []);
 
 child.kill();

@@ -4,6 +4,6 @@ import { liveStatus } from "@/agent/sdk/tools.ts";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
-  return Response.json(liveStatus());
+export async function GET() {
+  return Response.json(await liveStatus());
 }

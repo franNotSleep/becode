@@ -69,6 +69,16 @@ export function findProject(projectId: string): Project {
   return JSON.parse(row.config) as Project;
 }
 
+/** Replace a project's recipe, or insert it. For editing a row a seed has already written. */
+export function saveProject(project: Project): void {
+  db()
+    .prepare(
+      "INSERT INTO projects (id, config, created_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT(id) DO UPDATE SET config = excluded.config",
+    )
+    .run(project.id, JSON.stringify(project), Date.now());
+}
+
 /** Add a project. Throws on a duplicate id rather than quietly replacing a working recipe. */
 export function addProject(project: Project): void {
   const database = db();

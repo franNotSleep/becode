@@ -11,7 +11,7 @@ import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { findProject } from "../lib/db.ts";
-import { appUrls } from "../lib/projects.ts";
+import { projectPorts } from "../lib/projects.ts";
 import { holders, release } from "../lib/ports.ts";
 import { canRead } from "../lib/reads.ts";
 import { type Chat, chatFor, rememberChat, resolveInWorktree } from "../lib/task.ts";
@@ -491,7 +491,7 @@ async function* oneUserMessage(
 }
 
 /**
- * App ports held by something this becode did not start.
+ * Ports held by something this becode did not start — apps, and services that declare one.
  *
  * Its own children are not reported: `run_project` already hands the ports over between chats.
  * What is left is a leftover from a previous becode, or the person's own dev server.
@@ -502,9 +502,11 @@ async function foreignHolders(
   if (!chat.task) return [];
   const ours = new Set(ownedPids());
   const found = await Promise.all(
-    appUrls(findProject(chat.task.projectId)).map(async ({ port }) => ({
+    projectPorts(findProject(chat.task.projectId)).map(async (port) => ({
       port,
-      holders: (await holders(port)).filter((h) => !ours.has(h.pid)),
+      // By process group, not pid: becode tracks the shell it spawned, and the listener is that
+      // shell's grandchild. Matching on pid alone had becode offering to kill its own apps.
+      holders: (await holders(port)).filter((h) => !ours.has(h.pid) && !ours.has(h.pgid)),
     })),
   );
   return found.filter((entry) => entry.holders.length > 0);

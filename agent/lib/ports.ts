@@ -10,11 +10,51 @@
  * behaviour was before this existed.
  */
 import { execFile } from "node:child_process";
+import net from "node:net";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-export type Holder = { pid: number; command: string };
+/**
+ * `pgid` is what identifies a process as becode's.
+ *
+ * Apps are spawned detached through a shell, so what becode tracks is the shell's pid while the
+ * thing actually holding the port is its grandchild — a different pid, same process group. Matching
+ * on pid alone made becode offer to kill its own running apps.
+ */
+export type Holder = { pid: number; pgid: number; command: string };
+
+/**
+ * Is anything actually answering on this port?
+ *
+ * The process being alive is not the same thing. becode spawns through a shell, so what it holds
+ * is `/bin/sh -c "pnpm dev:backend"` — that shell survives the server crashing underneath it, and
+ * the status bar happily reported "running" while :3031 was empty. A connect settles it.
+ *
+ * ponytail: `net.connect`, not another lsof — this runs on every status poll.
+ */
+export async function isListening(port: number, timeoutMs = 300): Promise<boolean> {
+  // Both families, because they are not interchangeable: vite binds `[::1]:3000` and nothing
+  // answers on 127.0.0.1, while a Nest app on `*:3031` answers on either. Checking one only
+  // reported a healthy vendor admin as down.
+  const answers = await Promise.all(
+    ["127.0.0.1", "::1"].map(
+      (host) =>
+        new Promise<boolean>((resolve) => {
+          const socket = net.connect({ port, host });
+          const settle = (answer: boolean) => {
+            socket.destroy();
+            resolve(answer);
+          };
+          socket.setTimeout(timeoutMs);
+          socket.once("connect", () => settle(true));
+          socket.once("timeout", () => settle(false));
+          socket.once("error", () => settle(false));
+        }),
+    ),
+  );
+  return answers.some(Boolean);
+}
 
 /** Processes listening on a TCP port. Empty when the port is free, or when `lsof` is missing. */
 export async function holders(port: number): Promise<Holder[]> {
@@ -25,10 +65,11 @@ export async function holders(port: number): Promise<Holder[]> {
 
   return Promise.all(
     pids.map(async (pid) => {
-      const { stdout: command } = await exec("ps", ["-o", "command=", "-p", String(pid)]).catch(
+      const { stdout } = await exec("ps", ["-o", "pgid=,command=", "-p", String(pid)]).catch(
         () => ({ stdout: "" }),
       );
-      return { pid, command: command.trim() || "unknown" };
+      const [, pgid = "", command = ""] = /^\s*(\d+)\s+([\s\S]*)$/.exec(stdout.trim()) ?? [];
+      return { pid, pgid: Number(pgid) || pid, command: command.trim() || "unknown" };
     }),
   );
 }

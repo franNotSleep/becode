@@ -16,6 +16,7 @@ const exec = promisify(execFile);
 
 process.env.BECODE_PORT_OFFSET = "10";
 const { appUrls } = await import("./projects.ts");
+const { childEnv } = await import("../sdk/tools.ts");
 const { copyLocalEnv } = await import("./git.ts");
 
 // Ports: the base from config, plus this instance's offset, in the URL the person clicks.
@@ -28,6 +29,18 @@ assert.deepEqual(
   }),
   [{ name: "storefront", port: 3012, url: "http://localhost:3012" }],
 );
+
+// A child must not inherit becode's own port: `next dev` sets PORT to 4000, and a Nest service
+// reading it bound becode instead of the 3031 in its .env. Nor becode's credentials.
+const env = childEnv(
+  { ...process.env, PORT: "4000", CLAUDE_CODE_OAUTH_TOKEN: "secret", BECODE_MAX_TURNS: "9", PATH: "/usr/bin" },
+  {},
+);
+assert.equal(env.PORT, undefined, "becode's own PORT never reaches a child");
+assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined, "nor its token");
+assert.equal(env.BECODE_MAX_TURNS, undefined, "nor its own settings");
+assert.equal(env.PATH, "/usr/bin", "everything else is passed through");
+assert.equal(childEnv({ ...process.env, PORT: "4000" }, { PORT: "3002" }).PORT, "3002", "an explicit port still wins");
 
 // Liveness: running and clean-exit one-shots are up; a crash or a kill is not.
 const isUp = (child: { signalCode: string | null; exitCode: number | null }) =>
