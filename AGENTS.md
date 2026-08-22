@@ -32,7 +32,8 @@ Use a bounded authoring loop:
 - **A new target project** → a row via `addProject` in `agent/lib/db.ts`. `becode.projects.ts` only
   seeds an empty store; editing it after first run changes nothing.
 - **Anything touching what the agent may do** → `canUseTool` in `agent/sdk/session.ts`, and read
-  the permissions warning in CLAUDE.md before you touch it.
+  the permissions warning in CLAUDE.md before you touch it. Note the discovery grant: a chat with
+  no task may read one picked folder, minus its real `.env` files, and may not `Grep`.
 - **A new skill for the target repo** → `agent/skills/<name>/SKILL.md`. Auto-discovered.
 - **Custom HTTP** → a Next.js route handler. Do not add a second server.
 

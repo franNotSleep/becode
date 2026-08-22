@@ -17,7 +17,8 @@
     "check:policy": "node --experimental-strip-types --env-file-if-exists=.env.local roles/check.ts",
     "check:boot": "node --experimental-strip-types agent/lib/boot.check.ts",
     "check:attachments": "node --experimental-strip-types agent/lib/attachments.check.ts",
-    "check:db": "node --experimental-strip-types agent/lib/db.check.ts"
+    "check:db": "node --experimental-strip-types agent/lib/db.check.ts",
+    "check:reads": "node --experimental-strip-types agent/lib/reads.check.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.239",

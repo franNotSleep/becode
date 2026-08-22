@@ -5,11 +5,12 @@ import { run } from "@/agent/sdk/session.ts";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const { message, sessionId, attachments, projectId } = (await request.json()) as {
+  const { message, sessionId, attachments, projectId, discoveryPath } = (await request.json()) as {
     message?: unknown;
     sessionId?: unknown;
     attachments?: unknown;
     projectId?: unknown;
+    discoveryPath?: unknown;
   };
 
   if (typeof message !== "string" || message.trim().length === 0) {
@@ -31,6 +32,7 @@ export async function POST(request: Request) {
     attachments: blocks,
     sessionId: typeof sessionId === "string" ? sessionId : undefined,
     projectId: typeof projectId === "string" ? projectId : undefined,
+    discoveryPath: typeof discoveryPath === "string" ? discoveryPath : undefined,
     signal: request.signal,
   });
 

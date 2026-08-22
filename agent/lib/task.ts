@@ -26,6 +26,12 @@ export type Chat = {
   sessionId?: string;
   /** Chosen in the sidebar before the first message, when the chat was opened on a project. */
   projectId?: string;
+  /**
+   * A repo the person pointed at so its boot recipe can be worked out. Reads are allowed under
+   * this one path while the chat has no task — see the note in `canUseTool`. Cleared once the
+   * project is added.
+   */
+  discoveryRoot?: string;
   task: Task;
 };
 

@@ -154,7 +154,7 @@ function AgentMessagePart({
           parameters={toolParameters(part.parameters)}
           status={part.status}
           title={part.title}
-          tool="open_pull_request"
+          tool={part.tool}
         />
       );
   }

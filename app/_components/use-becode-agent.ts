@@ -20,6 +20,7 @@ export type BecodePart =
   | {
       type: "approval";
       id: string;
+      tool: string;
       title: string;
       parameters: unknown;
       reason: string;
@@ -45,6 +46,8 @@ export function useBecodeAgent() {
   const [openChatId, setOpenChatId] = useState<string>();
   const sessionId = useRef<string | undefined>(undefined);
   const abort = useRef<AbortController | undefined>(undefined);
+  /** A ref, not state: `addProject` sets it and sends in the same tick. */
+  const discoveryPath = useRef<string | undefined>(undefined);
 
   const apply = useCallback((event: AgentEvent) => {
     if (event.type === "session") {
@@ -86,6 +89,7 @@ export function useBecodeAgent() {
             message: text,
             sessionId: sessionId.current,
             projectId,
+            discoveryPath: discoveryPath.current,
             attachments,
           }),
           signal: controller.signal,
@@ -118,6 +122,7 @@ export function useBecodeAgent() {
   const startNew = useCallback((project?: string) => {
     abort.current?.abort();
     sessionId.current = undefined;
+    discoveryPath.current = undefined;
     setOpenChatId(undefined);
     setProjectId(project);
     setMessages([]);
@@ -132,6 +137,7 @@ export function useBecodeAgent() {
    */
   const open = useCallback(async (id: string, project?: string) => {
     abort.current?.abort();
+    discoveryPath.current = undefined;
     setError(undefined);
     setProjectId(project);
     setOpenChatId(id);
@@ -145,6 +151,29 @@ export function useBecodeAgent() {
     const { events } = (await response.json()) as { events: AgentEvent[] };
     setMessages(events.reduce(reduce, []));
   }, []);
+
+  /**
+   * Point becode at a repo to add.
+   *
+   * The path opens a read grant for that one folder (`canUseTool` in session.ts) and the first
+   * message is canned, because the person picked a folder rather than typing a request.
+   */
+  const addProject = useCallback(
+    (repoPath: string) => {
+      abort.current?.abort();
+      sessionId.current = undefined;
+      discoveryPath.current = repoPath;
+      setOpenChatId(undefined);
+      setProjectId(undefined);
+      setMessages([]);
+      setError(undefined);
+      void send(
+        `Add the repo at ${repoPath}. Read what it needs to boot — scripts, any compose file, ` +
+          `env examples, the design tokens — then propose it with propose_project.`,
+      );
+    },
+    [send],
+  );
 
   /** Answer a pending approval. The server resolves the promise canUseTool is parked on. */
   const respond = useCallback(async (id: string, approved: boolean) => {
@@ -167,6 +196,7 @@ export function useBecodeAgent() {
     respond,
     startNew,
     open,
+    addProject,
   };
 }
 
@@ -229,6 +259,7 @@ function reduce(messages: BecodeMessage[], event: AgentEvent): BecodeMessage[] {
         {
           type: "approval",
           id: event.id,
+          tool: event.tool,
           title: event.title,
           parameters: event.parameters,
           reason: event.reason,

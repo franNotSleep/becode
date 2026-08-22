@@ -133,6 +133,30 @@ The whole `Project` is one JSON column rather than tables for apps and services 
 "give me all the projects", and `Project` in `agent/lib/projects.ts` already owns the shape.
 `BECODE_DB` points the store elsewhere, which is how `check:db` runs against a temp file.
 
+## Adding a project the agent has never seen
+
+The `+` beside **Projects** takes an absolute path — a browser cannot hand over a real folder — and
+opens a chat whose `Chat.discoveryRoot` is that path. While such a chat has no task, `canUseTool`
+allows reads under **that one folder** instead of a worktree. `resolveInWorktree` is unchanged and
+still governs every write; nothing else widens.
+
+Two rules keep a real checkout from leaking into a stored recipe, learned the hard way — the first
+run of this proposed a boot command with the repo's live database URL and five API keys inlined:
+
+- **`.env`, `.env.local`, `.env.production` are unreadable while there is no task.** `.env.example`
+  and `.env.sample` are fine: a recipe needs variable *names*, and `createWorktree` copies the real
+  env files into every worktree anyway, so a command must never carry values.
+- **`Grep` is unavailable while there is no task.** It prints matching lines, so a path rule cannot
+  protect a secret from it — one search for `PORT` echoes the whole `.env` back. Discovery lists
+  (`Glob`) and reads (`Read`); inside a worktree `Grep` is how the agent finds anything and stays.
+
+The rules live in `agent/lib/reads.ts`, not inline in `canUseTool`, so `npm run check:reads` can
+drive every branch. Asking the agent to read a `.env` proves nothing — it declines conversationally
+before the gate is ever consulted, and a prompt is not a boundary.
+
+`propose_project` returns a draft `Project`; the person approves it through the same awaited
+promise gate 3 uses (`askPerson` in `session.ts`), and `addProject` writes the row.
+
 ## Chats, history, and two at once
 
 **One chat, one `Chat` in `agent/lib/task.ts`** — a `Map` keyed by session id, not a singleton.
@@ -190,7 +214,11 @@ boundary: it is fixed when the query starts, so on the turn that calls `start_ta
 worktree yet — and an absolute path ignores `cwd` entirely. Without the check, `Read` would reach
 becode's own `.env.local`. The model declining to do that is not a boundary either.
 
-All three gates live in **one `canUseTool` callback** (`agent/sdk/session.ts`):
+`propose_project` has a fourth gate, and it is the only one with **no judge**: adding a project is
+setup, not product work, so the role policy has nothing to rule on. A person confirms it, and the
+path must be the exact folder they picked.
+
+All the gates live in **one `canUseTool` callback** (`agent/sdk/session.ts`):
 
 1. `start_task` — judges **the request**, before any work starts. Fast, honest refusal.
 2. `Edit` / `Write` — judges **the actual change**: the path, plus the before/after text, before
@@ -330,6 +358,7 @@ npm run check:policy         # the role policy against 10 known allow/refuse cas
 npm run check:boot           # port math, liveness, and the env-file copy — no servers started
 npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
 npm run check:db             # the project store: seeding, round-trip, duplicate ids
+npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires

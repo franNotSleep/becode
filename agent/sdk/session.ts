@@ -11,6 +11,7 @@ import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { findProject } from "../lib/db.ts";
+import { canRead } from "../lib/reads.ts";
 import { type Chat, chatFor, rememberChat, resolveInWorktree } from "../lib/task.ts";
 import { judgeChange } from "./judge.ts";
 import { becodeTools, TOOL } from "./tools.ts";
@@ -35,7 +36,7 @@ export type AgentEvent =
   | { type: "reasoning"; text: string }
   | { type: "tool"; id: string; name: string; title: string; input: unknown }
   | { type: "tool-result"; id: string; ok: boolean; text: string }
-  | { type: "approval"; id: string; title: string; parameters: unknown; reason: string }
+  | { type: "approval"; id: string; tool: string; title: string; parameters: unknown; reason: string }
   | { type: "approval-resolved"; id: string; approved: boolean }
   | { type: "done" }
   | { type: "error"; message: string };
@@ -106,6 +107,7 @@ export function run({
   attachments,
   sessionId,
   projectId,
+  discoveryPath,
   signal,
 }: {
   message: string;
@@ -113,6 +115,8 @@ export function run({
   sessionId?: string;
   /** Set when the chat was opened on a project in the sidebar, before anything was typed. */
   projectId?: string;
+  /** Set when the person pointed becode at a repo to add. See the read grant in `canUseTool`. */
+  discoveryPath?: string;
   signal: AbortSignal;
 }): AsyncIterable<AgentEvent> {
   const out = channel<AgentEvent>();
@@ -121,6 +125,7 @@ export function run({
   // This chat's state. A resumed chat finds the worktree it already has; a new one starts empty.
   const chat: Chat = chatFor(sessionId);
   if (projectId) chat.projectId = projectId;
+  if (discoveryPath) chat.discoveryRoot = path.resolve(discoveryPath);
 
   // Gate 1 reads these from here: the ask may live in the screenshot rather than the typed text.
   turnAttachments.set(attachments);
@@ -163,6 +168,30 @@ export function run({
       return gateOpenPullRequest(chat, toolUseID, input, emit, signal);
     }
 
+    // Adding a project is setup, not product work: the role policy has nothing to say about it,
+    // so this is the one gate that is a person alone. The path must be the folder they picked.
+    if (toolName === TOOL.proposeProject) {
+      const proposed = (input.project ?? {}) as { id?: unknown; path?: unknown };
+      if (!chat.discoveryRoot) {
+        return { behavior: "deny", message: "No repo was picked to add. Ask the user for one." };
+      }
+      if (path.resolve(String(proposed.path ?? "")) !== chat.discoveryRoot) {
+        return {
+          behavior: "deny",
+          message: `The project path must be ${chat.discoveryRoot} — the folder the user picked.`,
+        };
+      }
+      const approved = await askPerson(toolUseID, emit, signal, {
+        tool: "propose_project",
+        title: `Add "${String(proposed.id ?? "project")}"`,
+        parameters: input.project,
+        reason: `Add ${chat.discoveryRoot} as a project becode can work on?`,
+      });
+      return approved
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: "The user did not add this project." };
+    }
+
     // Gate 2: every write, judged by what it actually does to the app.
     if (WRITE_TOOLS.has(toolName)) {
       const current = chat.task;
@@ -190,25 +219,10 @@ export function run({
     if (toolName === "TodoWrite") return { behavior: "allow", updatedInput: input };
 
     if (READ_TOOLS.has(toolName)) {
-      const current = chat.task;
-      if (!current) {
-        return {
-          behavior: "deny",
-          message: "There is no checkout to read yet. Call start_task first.",
-        };
-      }
-      const target = input.file_path ?? input.path;
-      if (typeof target === "string" && target.length > 0) {
-        try {
-          resolveInWorktree(current.worktree, target);
-        } catch {
-          return {
-            behavior: "deny",
-            message: `Only files inside the task worktree can be read. ${current.worktree} is the root.`,
-          };
-        }
-      }
-      return { behavior: "allow", updatedInput: input };
+      const verdict = canRead(chat, toolName, input.file_path ?? input.path);
+      return verdict.allow
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: verdict.message };
     }
 
     if (toolName.startsWith("mcp__becode__")) {
@@ -234,7 +248,10 @@ export function run({
           // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
           // calls start_task there is no worktree yet, and anything relative would resolve into
           // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
-          cwd: chat.task?.worktree ?? (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
+          cwd:
+            chat.task?.worktree ??
+            chat.discoveryRoot ??
+            (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
           systemPrompt: await systemPrompt(),
           mcpServers: { becode: becodeTools(chat) },
           // cwd is the target worktree, so this must be absolute: becode's own skills live here,
@@ -391,19 +408,12 @@ async function gateOpenPullRequest(
   }
 
   // Passed the policy; a person still confirms the outward-facing action.
-  const approved = await new Promise<boolean>((resolve) => {
-    pendingApprovals.set(toolUseID, resolve);
-    signal.addEventListener("abort", () => resolve(false), { once: true });
-    emit({
-      type: "approval",
-      id: toolUseID,
-      title: String(input.title ?? "Open pull request"),
-      parameters: { branch: current.branch, files, ...input },
-      reason: `Open a pull request on ${current.branch}? ${files.length} file(s) changed.`,
-    });
+  const approved = await askPerson(toolUseID, emit, signal, {
+    tool: "open_pull_request",
+    title: String(input.title ?? "Open pull request"),
+    parameters: { branch: current.branch, files, ...input },
+    reason: `Open a pull request on ${current.branch}? ${files.length} file(s) changed.`,
   });
-  pendingApprovals.delete(toolUseID);
-  emit({ type: "approval-resolved", id: toolUseID, approved });
 
   return approved
     ? { behavior: "allow", updatedInput: input }
@@ -426,6 +436,28 @@ async function* oneUserMessage(
     message: { role: "user", content: [...blocks, { type: "text", text }] },
     parent_tool_use_id: null,
   };
+}
+
+/**
+ * Park on a person.
+ *
+ * `canUseTool` is async, so waiting for a human is just an awaited promise; the approve route
+ * resolves it by tool_use id. An abort resolves it as a refusal rather than leaving it hanging.
+ */
+async function askPerson(
+  toolUseID: string,
+  emit: (event: AgentEvent) => void,
+  signal: AbortSignal,
+  ask: { tool: string; title: string; parameters: unknown; reason: string },
+): Promise<boolean> {
+  const approved = await new Promise<boolean>((resolve) => {
+    pendingApprovals.set(toolUseID, resolve);
+    signal.addEventListener("abort", () => resolve(false), { once: true });
+    emit({ type: "approval", id: toolUseID, ...ask });
+  });
+  pendingApprovals.delete(toolUseID);
+  emit({ type: "approval-resolved", id: toolUseID, approved });
+  return approved;
 }
 
 function toController(signal: AbortSignal): AbortController {

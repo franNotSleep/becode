@@ -1,10 +1,11 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { allProjects, findProject } from "../lib/db.ts";
+import { addProject, allProjects, findProject } from "../lib/db.ts";
 import { appUrls } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
@@ -109,6 +110,59 @@ export function becodeTools(chat: Chat) {
           (designSystem.length
             ? "Read the design system files before making any visual change."
             : "No design system is configured for this project."),
+      });
+    },
+  );
+
+  const proposeProject = tool(
+    "propose_project",
+    "Register a repo becode can work on, once you have worked out how to boot it. Read the repo " +
+      "first — package.json scripts, any compose file, .env.example, the design tokens — and " +
+      "propose the smallest recipe that actually starts it. The user confirms before it is saved.",
+    {
+      project: z.object({
+        id: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,40}$/, "lowercase letters, digits and dashes")
+          .describe("Short id, usually the repo name."),
+        path: z.string().describe("Absolute path to the repo. Must be the folder the user picked."),
+        baseBranch: z.string().describe("The branch pull requests target. Never committed to."),
+        install: z
+          .string()
+          .optional()
+          .describe("Command run once in a fresh worktree, e.g. 'pnpm install --frozen-lockfile'."),
+        apps: z
+          .array(
+            z.object({
+              name: z.string().describe("What the person would call this surface."),
+              command: z
+                .string()
+                .describe("Dev command with $PORT where the port goes. Bypass scripts that pin one."),
+              port: z.number().int().describe("The port its env and any CORS allowlist expect."),
+            }),
+          )
+          .min(1)
+          .describe("The surfaces a person looks at. One URL each, started in the task worktree."),
+        services: z
+          .array(z.object({ name: z.string(), command: z.string() }))
+          .optional()
+          .describe("Db, queue, api. Started in the source checkout, shared across tasks."),
+        designSystem: z
+          .array(z.string())
+          .optional()
+          .describe("Repo-relative files that define the look — tokens, theme config, ui folder."),
+      }),
+    },
+    /** The gate is in canUseTool: a person confirms, and the path must be the one they picked. */
+    async ({ project }) => {
+      const stat = await fs.stat(path.join(project.path, ".git")).catch(() => null);
+      if (!stat) throw new Error(`${project.path} is not a git repository.`);
+
+      addProject(project);
+      chat.discoveryRoot = undefined;
+      return reply({
+        added: project.id,
+        next: `Tell the user it is added. It will be in the sidebar; a new chat on it can start work.`,
       });
     },
   );
@@ -229,7 +283,7 @@ export function becodeTools(chat: Chat) {
     instructions:
       "becode's own tools. Everything else you need — reading, searching and editing the target " +
       "repo — is a built-in tool rooted at the task worktree.",
-    tools: [listProjects, startTask, runProject, openPullRequest],
+    tools: [listProjects, startTask, runProject, openPullRequest, proposeProject],
   });
 }
 
@@ -297,4 +351,5 @@ export function liveStatus() {
 export const TOOL = {
   startTask: "mcp__becode__start_task",
   openPullRequest: "mcp__becode__open_pull_request",
+  proposeProject: "mcp__becode__propose_project",
 } as const;

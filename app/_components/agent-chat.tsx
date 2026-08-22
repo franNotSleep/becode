@@ -157,6 +157,7 @@ export function AgentChat() {
         activeChatId={agent.openChatId}
         activeProjectId={agent.projectId}
         liveBranch={liveBranch}
+        onAddProject={agent.addProject}
         onNewChat={agent.startNew}
         onOpenChat={agent.open}
         reloadKey={reloadKey}

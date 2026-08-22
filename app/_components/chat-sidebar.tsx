@@ -2,6 +2,7 @@
 
 import {
   ChevronRightIcon,
+  FolderPlusIcon,
   MessageSquareIcon,
   PlusIcon,
   SquarePenIcon,
@@ -27,6 +28,7 @@ export function ChatSidebar({
   activeChatId,
   activeProjectId,
   liveBranch,
+  onAddProject,
   onNewChat,
   onOpenChat,
   reloadKey,
@@ -35,6 +37,7 @@ export function ChatSidebar({
   readonly activeProjectId?: string;
   readonly liveBranch?: string;
   readonly onNewChat: (projectId?: string) => void;
+  readonly onAddProject: (repoPath: string) => void;
   readonly onOpenChat: (sessionId: string, projectId: string) => void;
   /** Bumped by the chat when a turn finishes, so a new chat appears without a reload. */
   readonly reloadKey: number;
@@ -42,6 +45,7 @@ export function ChatSidebar({
   const [projects, setProjects] = useState<ProjectChats[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<string>();
+  const [addingProject, setAddingProject] = useState(false);
 
   const load = useCallback(async () => {
     const response = await fetch("/api/sessions").catch(() => null);
@@ -85,7 +89,36 @@ export function ChatSidebar({
         New chat
       </button>
 
-      <p className="px-2 pt-5 pb-1 text-muted-foreground text-xs">Projects</p>
+      <div className="group/head flex items-center gap-1 px-2 pt-5 pb-1">
+        <span className="flex-1 text-muted-foreground text-xs">Projects</span>
+        <button
+          aria-label="Add a project"
+          className="hidden size-5 place-items-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:grid group-hover/head:grid"
+          onClick={() => setAddingProject(true)}
+          type="button"
+        >
+          <FolderPlusIcon className="size-3.5" />
+        </button>
+      </div>
+
+      {addingProject ? (
+        // A browser cannot hand over a real folder path, so the person pastes one. becode then
+        // reads that one folder — and nothing else — to work the boot recipe out.
+        <input
+          aria-label="Absolute path to a repo"
+          autoFocus
+          className="mx-2 mb-1 rounded-lg border border-border/80 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/55 focus:border-foreground/25"
+          onBlur={() => setAddingProject(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setAddingProject(false);
+            if (event.key !== "Enter") return;
+            const value = event.currentTarget.value.trim();
+            setAddingProject(false);
+            if (value) onAddProject(value);
+          }}
+          placeholder="/Users/you/Dev/some-repo"
+        />
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {projects.map((project) => {
