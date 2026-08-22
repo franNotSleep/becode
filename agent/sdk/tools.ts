@@ -4,11 +4,11 @@ import fs from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { projects } from "../../becode.projects.ts";
+import { allProjects, findProject } from "../lib/db.ts";
 import { appUrls } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { activeTask, type Chat, findProject, resolveInWorktree } from "../lib/task.ts";
+import { activeTask, type Chat, resolveInWorktree } from "../lib/task.ts";
 import { judgeRequest } from "./judge.ts";
 
 const exec = promisify(execFile);
@@ -36,7 +36,7 @@ export function becodeTools(chat: Chat) {
       return reply({
         role: role.name,
         policy: role.text,
-        projects: projects.map((p) => ({ id: p.id, baseBranch: p.baseBranch })),
+        projects: allProjects().map((p) => ({ id: p.id, baseBranch: p.baseBranch })),
         // The person opened this chat on a project, so there is nothing to ask about.
         ...(chat.projectId ? { thisChatIsAbout: chat.projectId } : {}),
       });

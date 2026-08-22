@@ -1,5 +1,5 @@
 import { listSessions } from "@anthropic-ai/claude-agent-sdk";
-import { projects } from "@/becode.projects.ts";
+import { allProjects } from "@/agent/lib/db.ts";
 
 // Reads the SDK's session store off the local filesystem.
 export const runtime = "nodejs";
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
   const limit = Number(new URL(request.url).searchParams.get("limit") ?? 40);
 
   const groups = await Promise.all(
-    projects.map(async (project) => {
+    allProjects().map(async (project) => {
       const sessions = await listSessions({ dir: project.path, limit }).catch(() => []);
       return {
         id: project.id,

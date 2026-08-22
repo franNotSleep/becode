@@ -29,6 +29,8 @@ Use a bounded authoring loop:
 - **A new agent capability** → a `tool()` in `agent/sdk/tools.ts`, added to `becodeTools`. It runs
   in-process against the host filesystem; there is no sandbox.
 - **A new policy rule** → `roles/<role>.md`, in plain English. Never in a prompt, never in code.
+- **A new target project** → a row via `addProject` in `agent/lib/db.ts`. `becode.projects.ts` only
+  seeds an empty store; editing it after first run changes nothing.
 - **Anything touching what the agent may do** → `canUseTool` in `agent/sdk/session.ts`, and read
   the permissions warning in CLAUDE.md before you touch it.
 - **A new skill for the target repo** → `agent/skills/<name>/SKILL.md`. Auto-discovered.
@@ -40,6 +42,7 @@ Use a bounded authoring loop:
 command, with ten known allow/refuse cases. Then `npm run typecheck`. Run the narrowest check that
 actually exercises what you changed.
 
+<!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.

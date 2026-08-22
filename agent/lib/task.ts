@@ -1,5 +1,5 @@
 import path from "node:path";
-import { projects } from "../../becode.projects.ts";
+import { findProject } from "./db.ts";
 import type { Project } from "./projects.ts";
 
 export type Task = {
@@ -46,14 +46,6 @@ export function chatFor(sessionId: string | undefined): Chat {
 export function rememberChat(chat: Chat, sessionId: string): void {
   chat.sessionId = sessionId;
   chats.set(sessionId, chat);
-}
-
-export function findProject(projectId: string): Project {
-  const project = projects.find((p) => p.id === projectId);
-  if (!project) {
-    throw new Error(`Unknown project "${projectId}". Configured: ${projects.map((p) => p.id).join(", ")}`);
-  }
-  return project;
 }
 
 export function activeTask(chat: Chat): { task: NonNullable<Task>; project: Project } {

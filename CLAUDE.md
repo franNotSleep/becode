@@ -31,7 +31,8 @@ These are the point of the project. Do not relax them for convenience.
   design system (tokens, theme config, component library) and works from it. New one-off colors,
   spacings, or components are a bug.
 - **Target-repo-agnostic.** Nothing may hardcode Tix. Project setup is discovered from the target
-  repo (package manager, scripts, compose/env files) or declared in per-project config.
+  repo (package manager, scripts, compose/env files) or declared in per-project config. Projects
+  live in `agent/lib/db.ts`; `becode.projects.ts` only seeds an empty store.
 - **Parallel tasks are isolated.** Concurrent tasks get separate git worktrees and separate ports.
   Two tasks must never share a working tree.
 
@@ -62,7 +63,8 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | **Which role this instance runs as** | `becode.config.ts` |
 | Policy check harness | `roles/check.ts` (`npm run check:policy`) |
 | The judge | `agent/sdk/judge.ts`, `agent/lib/roles.ts` |
-| Target repos and how to boot them | `becode.projects.ts`, `agent/lib/projects.ts` |
+| Target repos and how to boot them | `agent/lib/db.ts` (seeded from `becode.projects.ts`) |
+| The `Project` shape, port maths | `agent/lib/projects.ts` |
 | Per-chat state: the task, its worktree, its project | `agent/lib/task.ts` |
 | Content blocks → the events the browser renders | `agent/sdk/transcript.ts` |
 | Chat history and the sidebar | `app/api/sessions/`, `app/_components/chat-sidebar.tsx` |
@@ -113,6 +115,23 @@ the ask is often *in* the screenshot — "do this" beside a mock reading "make e
 otherwise be judged as "do this". The turn's blocks sit in a module singleton next to `task` so the
 judge can reach them from inside the tool call. Gate 2 and gate 3 stay text-only; they read the
 diff, which says what it does on its own.
+
+## Where projects live
+
+`becode.projects.ts` is now the **seed**, not the record. `agent/lib/db.ts` opens a `node:sqlite`
+database at `~/.becode/becode.db` (Node 24 ships it; no dependency) and, the first time the table
+is empty, inserts whatever the file declares. `allProjects` / `findProject` / `addProject` are the
+only ways in; nothing imports `becode.projects.ts` any more except the seed path.
+
+The reason is not per-person data — one becode per person on their own machine, so a file was
+already per-person. It is that the agent is meant to work a repo's boot recipe out for itself, and
+it cannot write `becode.projects.ts`: that file is becode's own source, outside every worktree, and
+`canUseTool` refuses it. A project stops being source code the moment something other than a human
+authors it.
+
+The whole `Project` is one JSON column rather than tables for apps and services — every read is
+"give me all the projects", and `Project` in `agent/lib/projects.ts` already owns the shape.
+`BECODE_DB` points the store elsewhere, which is how `check:db` runs against a temp file.
 
 ## Chats, history, and two at once
 
@@ -310,6 +329,7 @@ npm run typecheck            # tsc --noEmit
 npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
 npm run check:boot           # port math, liveness, and the env-file copy — no servers started
 npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
+npm run check:db             # the project store: seeding, round-trip, duplicate ids
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires
