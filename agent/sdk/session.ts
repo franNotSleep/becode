@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { query, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import { query, type PermissionResult, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
+import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { resolveInWorktree, task } from "../lib/task.ts";
@@ -99,11 +101,15 @@ function describeEdit(input: Record<string, unknown>, worktree: string): string 
  */
 export function run(
   message: string,
+  attachments: ContentBlockParam[],
   sessionId: string | undefined,
   signal: AbortSignal,
 ): AsyncIterable<AgentEvent> {
   const out = channel<AgentEvent>();
   const emit = out.push;
+
+  // Gate 1 reads these from here: the ask may live in the screenshot rather than the typed text.
+  turnAttachments.set(attachments);
 
   if (!hasAuth()) {
     emit({ type: "error", message: AUTH_HINT });
@@ -205,7 +211,9 @@ export function run(
   void (async () => {
     try {
       const response = query({
-        prompt: message,
+        // A plain string when there is nothing attached — the path that has always worked. Blocks
+        // only exist in the streaming-input form, so that form is used only when there are some.
+        prompt: attachments.length === 0 ? message : oneUserMessage(attachments, message),
         options: {
           // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
           // calls start_task there is no worktree yet, and anything relative would resolve into
@@ -407,6 +415,24 @@ async function gateOpenPullRequest(
   return approved
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user did not approve the pull request." };
+}
+
+/**
+ * The streaming-input form of `prompt`, used for exactly one message.
+ *
+ * `query` takes `string | AsyncIterable<SDKUserMessage>`, and only the second carries content
+ * blocks. The generator yields once and returns, so the turn runs and ends as it does for a
+ * string. `SDKUserMessage` requires only these three fields; `session_id` is set by the CLI.
+ */
+async function* oneUserMessage(
+  blocks: ContentBlockParam[],
+  text: string,
+): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: "user",
+    message: { role: "user", content: [...blocks, { type: "text", text }] },
+    parent_tool_use_id: null,
+  };
 }
 
 function toController(signal: AbortSignal): AbortController {

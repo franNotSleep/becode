@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import type { Attachment } from "@/agent/lib/attachments.ts";
 import type { AgentEvent } from "@/agent/sdk/session.ts";
 
 export type BecodePart =
   | { type: "text"; text: string }
+  | { type: "file"; name: string; mediaType: string; data: string }
   | { type: "reasoning"; text: string }
   | {
       type: "tool";
@@ -112,12 +114,18 @@ export function useBecodeAgent() {
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: Attachment[] = []) => {
       setError(undefined);
       setStatus("submitted");
       setMessages((previous) => [
         ...previous,
-        { id: nextId(), role: "user", parts: [{ type: "text", text }] },
+        {
+          id: nextId(),
+          role: "user",
+          // ponytail: the base64 is kept as-is and rendered as a data: URL — nothing to revoke,
+          // and the server's 15MB-per-turn cap already bounds what a transcript can hold.
+          parts: [...attachments.map((a) => ({ type: "file" as const, ...a })), { type: "text" as const, text }],
+        },
         { id: nextId(), role: "assistant", parts: [] },
       ]);
 
@@ -128,13 +136,16 @@ export function useBecodeAgent() {
         const response = await fetch("/api/agent", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, sessionId: sessionId.current }),
+          body: JSON.stringify({ message: text, sessionId: sessionId.current, attachments }),
           signal: controller.signal,
         });
 
-        if (!response.ok || !response.body) {
-          throw new Error(`The agent did not respond (${response.status}).`);
+        if (!response.ok) {
+          // A refused attachment comes back as a 400 with a reason worth reading.
+          const detail = (await response.json().catch(() => null)) as { message?: string } | null;
+          throw new Error(detail?.message ?? `The agent did not respond (${response.status}).`);
         }
+        if (!response.body) throw new Error("The agent returned an empty response.");
 
         setStatus("streaming");
         for await (const event of readNdjson(response.body)) apply(event);

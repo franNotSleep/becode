@@ -4,6 +4,7 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import { FileTextIcon } from "lucide-react";
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { AgentActivity } from "@/components/agents/agent-activity";
@@ -15,6 +16,7 @@ import {
 } from "@/components/agents/message";
 import { ToolApproval } from "@/components/agents/tool-approval";
 import { ToolResult, ToolResultOutput } from "@/components/agents/tool-result";
+import { dataUrl } from "./agent-chat";
 import type { BecodeMessage, BecodePart } from "./use-becode-agent";
 
 type OnRespond = (id: string, approved: boolean) => void | Promise<void>;
@@ -44,11 +46,37 @@ export function AgentMessage({
   // What the CEO typed reads as something they said: a bubble on their side. What becode says is
   // the document — full width, no container, so a diff or a URL is not squeezed into a chat bubble.
   if (message.role === "user") {
+    const files = message.parts.filter((part) => part.type === "file");
     return (
       <Message animateIn from="user">
         <MessageContent>
           <MessageBubble animateIn variant="soft">
-            <MessageBubbleContent>{plainText(message)}</MessageBubbleContent>
+            <MessageBubbleContent>
+              {files.length > 0 ? (
+                <span className="mb-2 flex flex-wrap gap-2">
+                  {files.map((file, index) =>
+                    file.mediaType.startsWith("image/") ? (
+                      // biome-ignore lint/performance/noImgElement: a data: URL has nothing to optimise.
+                      <img
+                        alt={file.name}
+                        className="max-h-40 rounded-lg border border-border/60 object-cover"
+                        key={`${file.name}:${index}`}
+                        src={dataUrl(file)}
+                      />
+                    ) : (
+                      <span
+                        className="flex items-center gap-1.5 rounded-lg border border-border/60 px-2 py-1 text-xs"
+                        key={`${file.name}:${index}`}
+                      >
+                        <FileTextIcon className="size-3.5" />
+                        {file.name}
+                      </span>
+                    ),
+                  )}
+                </span>
+              ) : null}
+              {plainText(message)}
+            </MessageBubbleContent>
           </MessageBubble>
         </MessageContent>
       </Message>
@@ -88,6 +116,9 @@ function AgentMessagePart({
   readonly part: BecodePart;
 }) {
   switch (part.type) {
+    // Sent attachments render inside the user bubble, above; nothing to show in the stream.
+    case "file":
+      return null;
     case "text":
       return <Markdown>{part.text}</Markdown>;
     case "reasoning":

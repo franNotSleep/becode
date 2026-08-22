@@ -1,21 +1,33 @@
+import { type Attachment, toBlocks } from "@/agent/lib/attachments.ts";
 import { run } from "@/agent/sdk/session.ts";
 
 // The agent touches the host filesystem and spawns dev servers — it is not edge-compatible.
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const { message, sessionId } = (await request.json()) as {
+  const { message, sessionId, attachments } = (await request.json()) as {
     message?: unknown;
     sessionId?: unknown;
+    attachments?: unknown;
   };
 
   if (typeof message !== "string" || message.trim().length === 0) {
     return Response.json({ message: "message is required" }, { status: 400 });
   }
 
+  // The browser picks the files, so the allowlist is enforced here too, not only by `accept`.
+  // A refusal is a 400 rather than an agent turn: nothing about a dropped video needs a model.
+  let blocks: ReturnType<typeof toBlocks>;
+  try {
+    blocks = toBlocks(Array.isArray(attachments) ? (attachments as Attachment[]) : []);
+  } catch (e) {
+    return Response.json({ message: (e as Error).message }, { status: 400 });
+  }
+
   const encoder = new TextEncoder();
   const events = run(
     message.trim(),
+    blocks,
     typeof sessionId === "string" ? sessionId : undefined,
     request.signal,
   );

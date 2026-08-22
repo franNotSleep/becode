@@ -1,5 +1,7 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { config } from "../../becode.config.ts";
+import { turnAttachments } from "../lib/attachments.ts";
 import { rolePolicy } from "../lib/roles.ts";
 
 export type Verdict = { allowed: boolean; reason: string };
@@ -34,6 +36,10 @@ what they could ask for instead. No policy quoting, no lecturing.>`;
  * No tools (`disallowedTools: ["*"]` strips every tool definition) and no setting sources, so the
  * judge cannot read the repo, and becode's own CLAUDE.md never leaks into its context. It sees the
  * role policy and the thing to judge, nothing else.
+ *
+ * A request also carries whatever the person attached. Without that, "do this" beside a screenshot
+ * reading "make everything free" is judged as "do this". A change does not: gates 2 and 3 rule on
+ * the diff, which says what it does on its own.
  */
 async function rule(kind: "request" | "change", detail: string): Promise<Verdict> {
   const role = rolePolicy();
@@ -42,9 +48,12 @@ async function rule(kind: "request" | "change", detail: string): Promise<Verdict
       ? `Someone in the "${role.name}" role has asked for this:`
       : `Someone in the "${role.name}" role has produced this change, which is about to become a pull request:`;
 
+  const prompt = `The "${role.name}" role's policy:\n\n---\n${role.text}\n---\n\n${subject}\n\n---\n${detail}\n---`;
+  const attached = kind === "request" ? turnAttachments.get() : [];
+
   let text = "";
   for await (const message of query({
-    prompt: `The "${role.name}" role's policy:\n\n---\n${role.text}\n---\n\n${subject}\n\n---\n${detail}\n---`,
+    prompt: attached.length === 0 ? prompt : withAttachments(attached, prompt),
     options: {
       model: config.judgeModel,
       systemPrompt: SYSTEM,
@@ -59,6 +68,18 @@ async function rule(kind: "request" | "change", detail: string): Promise<Verdict
   }
 
   return parseVerdict(text);
+}
+
+/** Content blocks only exist in `query`'s streaming-input form. One message, then done. */
+async function* withAttachments(
+  blocks: ContentBlockParam[],
+  text: string,
+): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: "user",
+    message: { role: "user", content: [...blocks, { type: "text", text }] },
+    parent_tool_use_id: null,
+  };
 }
 
 /**

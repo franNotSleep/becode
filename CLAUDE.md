@@ -64,6 +64,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | The judge | `agent/sdk/judge.ts`, `agent/lib/roles.ts` |
 | Target repos and how to boot them | `becode.projects.ts`, `agent/lib/projects.ts` |
 | Active task, worktree path boundary | `agent/lib/task.ts` |
+| What may be attached, and what it becomes | `agent/lib/attachments.ts` (`npm run check:attachments`) |
 | git worktree / diff helpers | `agent/lib/git.ts` |
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
@@ -91,6 +92,25 @@ when a task ends, or the next task would be looking at the previous worktree's c
 `git worktree add` copies tracked files only, so `createWorktree` also copies the source checkout's
 gitignored `.env*` files across. Without them the worktree boots into a broken app — which is
 exactly the thing the person is about to look at.
+
+## Attachments
+
+Images, PDFs and text/code reach the model as Messages API **content blocks**, never as files on
+disk. That is deliberate: the read boundary in `resolveInWorktree` does not have to widen, and on
+the turn that calls `start_task` there is no worktree to write into anyway.
+
+`agent/lib/attachments.ts` is the trust boundary — an allowlist (png/jpeg/gif/webp,
+`application/pdf`, text and a code-extension set), 5 files, 5MB each, 15MB a turn. The browser's
+`accept` attribute is a convenience; this is the check. Anything else, video included, is a 400
+from `app/api/agent/route.ts` rather than an agent turn.
+
+Blocks only exist in `query`'s streaming-input form (`prompt: AsyncIterable<SDKUserMessage>`), so
+`session.ts` keeps the plain-string prompt when nothing is attached and switches forms only when
+something is. Gate 1 needs them too: `judgeRequest` rules on what `start_task` was asked for, and
+the ask is often *in* the screenshot — "do this" beside a mock reading "make everything free" would
+otherwise be judged as "do this". The turn's blocks sit in a module singleton next to `task` so the
+judge can reach them from inside the tool call. Gate 2 and gate 3 stay text-only; they read the
+diff, which says what it does on its own.
 
 ## How the constraint works
 
@@ -198,8 +218,15 @@ Two notes:
 
 - **Markdown.** beUI's `Message` is a layout primitive with no markdown renderer, so agent text
   still goes through `streamdown` (a local `Markdown` memo in `agent-message.tsx`).
-- **Attachments.** beUI's `PromptInput` submits `(value, model?)` — no file parts, and `send()`
-  takes text only. `@beui/attachment-upload` is the way back if pasting a reference image matters.
+- **Attachments.** beUI's `PromptInput` submits `(value, model?)` and has no file parts, so the
+  attachment row, the paperclip, paste and drag-drop live in `agent-chat.tsx`, wrapped around an
+  unforked `PromptInput` whose own border is stripped. The paperclip goes in its `leadingAction`
+  slot. There is no `@beui/attachment-upload` — it does not exist. `@beui/chat-app` does not help
+  either: its `prompt-input.tsx` is byte-identical to the one already here and its "Attach file"
+  is a label in the demo's `actions` array with no handler behind it. `@beui/file-upload` is an
+  upload *queue* — progress, retry, per-file state — for a flow that has no upload step.
+  One consequence of not forking: the composer will not submit an empty textarea, so an
+  attachment always needs a word beside it.
 - **`approval-card` is unused.** It rendered eve's `ask_question`; `AskUserQuestion` is in
   `disallowedTools` because in a chat the agent can simply ask in a message. `tool-approval` is
   what gate 3 renders.
@@ -238,6 +265,7 @@ there is nothing to virtualize.
 npm run typecheck            # tsc --noEmit
 npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
 npm run check:boot           # port math, liveness, and the env-file copy — no servers started
+npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires
