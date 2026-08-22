@@ -73,7 +73,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Always-on system prompt | `agent/instructions.md` |
-| HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts` |
+| HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts` |
 | CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
 | Is it live, and at which URLs | `app/_components/live-status.tsx` ← `GET /api/agent/status` |
 
@@ -228,6 +228,17 @@ cursor, so a reader asks only for what it has not seen and is told when it fell 
 buffer was forty chunks with `shift()` — seconds for a Nest boot, so whatever killed it was gone
 before anyone looked. `GET /api/agent/logs?name=&from=` backs a 1s poll from the modal
 (`app/_components/server-logs.tsx`); the agent reads the same buffer through `read_logs`.
+
+**Starting it is a button, not a request.** "Start the project" is not a change, so gate 1's judge
+refused it — correctly, and uselessly. `POST /api/agent/run` calls the same `bootProject`
+`run_project` does, from the header's Start/Stop button (`live-status.tsx`), with no judge: booting
+is not a product change and the person clicking it is the person the policy protects. Apps run in
+the chat's worktree when it has a task, the source checkout when it does not.
+
+**A service with a declared port gets a URL too.** It used to be apps only, so the backend showed as
+"up" with nothing to click — the one server whose logs you want is the one you cannot open. `Server`
+now carries an explicit `app` flag, because `url` was doubling as "is this an app", which is what
+`takeAppPorts` reads to leave shared services alone.
 
 **becode's own environment does not reach a target's servers.** `next dev` sets
 `process.env.PORT = 4000` (`start-server.js`), and children inherited it — so the tix backend bound

@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { addProject, allProjects, findProject } from "../lib/db.ts";
 import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts";
 import { isListening } from "../lib/ports.ts";
-import { appUrls } from "../lib/projects.ts";
+import { appUrls, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { activeTask, type Chat, resolveInWorktree, setTask } from "../lib/task.ts";
@@ -193,86 +193,7 @@ export function becodeTools(chat: Chat) {
     },
     async ({ install }) => {
       const { task: current, project } = activeTask(chat);
-
-      if (install && project.install) {
-        await new Promise<void>((resolve, reject) => {
-          const p = spawn(project.install!, { cwd: current.worktree, shell: true, env: childEnv(process.env, {}) });
-          p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`install failed (exit ${code})`))));
-        });
-      }
-
-      // Anything that is not actually serving is cleared out first, so "already up" cannot mean
-      // "its shell is alive". A `nest start --watch` whose server died leaves that shell running,
-      // and skipping it here reported the backend as restarted while :3031 stayed empty.
-      for (const [name, entry] of live) {
-        if (await serverUp(entry)) continue;
-        stop(entry.child);
-        live.delete(name);
-      }
-
-      // The ports are the only contended resource — worktrees are cheap and already isolated.
-      // ponytail: take the lock over rather than queue behind it. One person, one screen: they
-      // asked to see *this* branch. Add waiting only if two people ever watch at once.
-      const displaced = takeAppPorts(current.branch);
-      const started: string[] = [];
-
-      // Services run in the *source checkout*: fixed ports, shared across tasks, and they read
-      // env files that only exist there. Starting a second copy would just fail to bind.
-      for (const service of project.services ?? []) {
-        if (live.has(service.name)) continue;
-        start(service.name, project.path, service.command, {}, undefined, service.port);
-        started.push(service.name);
-      }
-
-      // Apps run in the worktree, on the branch being changed. ponytail: never restarted — every
-      // dev server here hot-reloads. Restart becode if a config file (not a component) changes.
-      const urls = appUrls(project);
-      for (const [index, app] of project.apps.entries()) {
-        const { port, url } = urls[index];
-        if (live.has(app.name)) continue;
-        start(app.name, current.worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url, port);
-        started.push(app.name);
-      }
-
-      // Give anything new a moment to bind or die, so a crash is reported now rather than as a
-      // blank page. A cold pnpm monorepo start is slower than a warm one, hence the generous wait.
-      if (started.length > 0) await new Promise((r) => setTimeout(r, 12_000));
-
-      const report = await Promise.all(
-        [...live.values()].map(async (s) => {
-          const up = await serverUp(s);
-          return {
-            name: s.name,
-            url: s.url,
-            running: up,
-            ...(up ? {} : { exitCode: s.child.exitCode, logs: tail(s.logs, 1200) }),
-          };
-        }),
-      );
-
-      const dead = report.filter((s) => !s.running);
-      if (dead.some((s) => project.apps.some((a) => a.name === s.name))) {
-        throw new Error(`Some apps failed to start:\n${JSON.stringify(dead, null, 2)}`);
-      }
-
-      // A dead *service* does not throw — `docker compose up -d` exiting 0 is healthy — but it
-      // used to pass in silence, so the person was told everything was fine while the backend was
-      // down. Now the agent is handed the fact and can say it.
-      const brokenServices = dead.filter((s) => !project.apps.some((a) => a.name === s.name));
-
-      return reply({
-        branch: current.branch,
-        started,
-        servers: report,
-        ...(displaced ? { note: `Stopped the apps that were showing ${displaced} — tell the user.` } : {}),
-        ...(brokenServices.length > 0
-          ? {
-              warning:
-                `${brokenServices.map((s) => s.name).join(", ")} is not running. The app may look ` +
-                `broken because of it. Call read_logs to find out why, and tell the user.`,
-            }
-          : {}),
-      });
+      return reply(await bootProject(project, current.worktree, current.branch, install));
     },
   );
 
@@ -373,7 +294,15 @@ export function becodeTools(chat: Chat) {
  * ponytail: an in-process map, not a supervisor. becode is one local process serving one
  * person; if it ever needs to survive a restart, move this to a pidfile in the worktree.
  */
-type Server = { name: string; url?: string; port?: number; child: ChildProcess; logs: LogBuffer };
+type Server = {
+  name: string;
+  url?: string;
+  port?: number;
+  /** An app (worktree, takeable port) rather than a shared service. Services have URLs too now. */
+  app: boolean;
+  child: ChildProcess;
+  logs: LogBuffer;
+};
 
 const live = new Map<string, Server>();
 let appOwner: string | undefined;
@@ -390,7 +319,7 @@ function takeAppPorts(branch: string | undefined, onlyIfOwnedBy?: string): strin
   const displaced = appOwner === branch ? undefined : appOwner;
   if (appOwner !== branch) {
     for (const [name, entry] of live) {
-      if (!entry.url) continue;
+      if (!entry.app) continue;
       stop(entry.child);
       live.delete(name);
     }
@@ -471,8 +400,9 @@ function start(
   cwd: string,
   command: string,
   env: Record<string, string>,
-  url?: string,
-  port?: number,
+  url: string | undefined,
+  port: number | undefined,
+  app: boolean,
 ) {
   // `detached` puts the app in its own process group. It has to: `shell: true` means the child is
   // `/bin/sh -c ...` and the dev server is its grandchild, so killing the child leaves the server
@@ -484,9 +414,118 @@ function start(
   const capture = (buf: Buffer) => append(logs, buf.toString());
   child.stdout?.on("data", capture);
   child.stderr?.on("data", capture);
-  const entry = { name, url, port, child, logs };
+  const entry = { name, url, port, app, child, logs };
   live.set(name, entry);
   return entry;
+}
+
+/**
+ * Boot a project's apps and the services they need, and report what is serving.
+ *
+ * Shared by `run_project` and the start button in the header (`POST /api/agent/run`) — booting is
+ * not a product change, so it does not belong behind the policy judge, and the person asking to
+ * look at their own app should not have to phrase it as a task.
+ *
+ * `worktree` is where the apps run: a task's worktree when there is one, the source checkout when
+ * the person just wants to see the project. Services always run from the source checkout.
+ */
+export async function bootProject(
+  project: Project,
+  worktree: string,
+  branch: string | undefined,
+  install = false,
+) {
+  if (install && project.install) {
+    await new Promise<void>((resolve, reject) => {
+      const p = spawn(project.install!, { cwd: worktree, shell: true, env: childEnv(process.env, {}) });
+      p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`install failed (exit ${code})`))));
+    });
+  }
+
+  // Anything that is not actually serving is cleared out first, so "already up" cannot mean
+  // "its shell is alive". A `nest start --watch` whose server died leaves that shell running,
+  // and skipping it here reported the backend as restarted while :3031 stayed empty.
+  for (const [name, entry] of live) {
+    if (await serverUp(entry)) continue;
+    stop(entry.child);
+    live.delete(name);
+  }
+
+  // The ports are the only contended resource — worktrees are cheap and already isolated.
+  // ponytail: take the lock over rather than queue behind it. One person, one screen: they
+  // asked to see *this* branch. Add waiting only if two people ever watch at once.
+  const displaced = takeAppPorts(branch);
+  const started: string[] = [];
+
+  // Services run in the *source checkout*: fixed ports, shared across tasks, and they read
+  // env files that only exist there. Starting a second copy would just fail to bind.
+  for (const service of project.services ?? []) {
+    if (live.has(service.name)) continue;
+    // A declared port is also an address. Without this the bar showed the backend as "up" with
+    // nothing to click — the one server whose logs you actually want is the one you cannot open.
+    const url = service.port ? `http://localhost:${service.port}` : undefined;
+    start(service.name, project.path, service.command, {}, url, service.port, false);
+    started.push(service.name);
+  }
+
+  // Apps run in the worktree, on the branch being changed. ponytail: never restarted — every
+  // dev server here hot-reloads. Restart becode if a config file (not a component) changes.
+  const urls = appUrls(project);
+  for (const [index, app] of project.apps.entries()) {
+    const { port, url } = urls[index];
+    if (live.has(app.name)) continue;
+    start(app.name, worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url, port, true);
+    started.push(app.name);
+  }
+
+  // Give anything new a moment to bind or die, so a crash is reported now rather than as a
+  // blank page. A cold pnpm monorepo start is slower than a warm one, hence the generous wait.
+  if (started.length > 0) await new Promise((r) => setTimeout(r, 12_000));
+
+  const report = await Promise.all(
+    [...live.values()].map(async (s) => {
+      const up = await serverUp(s);
+      return {
+        name: s.name,
+        url: s.url,
+        running: up,
+        ...(up ? {} : { exitCode: s.child.exitCode, logs: tail(s.logs, 1200) }),
+      };
+    }),
+  );
+
+  const dead = report.filter((s) => !s.running);
+  if (dead.some((s) => project.apps.some((a) => a.name === s.name))) {
+    throw new Error(`Some apps failed to start:\n${JSON.stringify(dead, null, 2)}`);
+  }
+
+  // A dead *service* does not throw — `docker compose up -d` exiting 0 is healthy — but it
+  // used to pass in silence, so the person was told everything was fine while the backend was
+  // down. Now the agent is handed the fact and can say it.
+  const brokenServices = dead.filter((s) => !project.apps.some((a) => a.name === s.name));
+
+  return {
+    branch,
+    started,
+    servers: report,
+    ...(displaced ? { note: `Stopped the apps that were showing ${displaced} — tell the user.` } : {}),
+    ...(brokenServices.length > 0
+      ? {
+          warning:
+            `${brokenServices.map((s) => s.name).join(", ")} is not running. The app may look ` +
+            `broken because of it. Call read_logs to find out why, and tell the user.`,
+        }
+      : {}),
+  };
+}
+
+/** Stop everything becode has booted — what the header's stop button does. */
+export function stopProject(): string[] {
+  const stopped = [...live.keys()];
+  for (const entry of live.values()) stop(entry.child);
+  live.clear();
+  appOwner = undefined;
+  return stopped;
 }
 
 /**
@@ -504,9 +543,10 @@ export async function liveStatus() {
       running: await serverUp(s),
       exitCode: s.child.exitCode,
       pid: s.child.pid,
+      app: s.app,
     })),
   );
-  return { branch: servers.some((s) => s.url && s.running) ? appOwner : undefined, servers };
+  return { branch: servers.some((s) => s.app && s.running) ? appOwner : undefined, servers };
 }
 
 /** One server's output from a reader's cursor onward. Backs the log route's poll. */

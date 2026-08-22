@@ -1,12 +1,13 @@
 "use client";
 
-import { ExternalLinkIcon, ScrollTextIcon } from "lucide-react";
+import { ExternalLinkIcon, Loader2Icon, PlayIcon, ScrollTextIcon, SquareIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   MorphPopover,
   MorphPopoverContent,
   MorphPopoverTrigger,
 } from "@/components/motion/popover-morph";
+import { Button } from "@/components/motion/button";
 import { cn } from "@/lib/utils";
 import { ServerLogs } from "./server-logs";
 
@@ -29,9 +30,19 @@ type Status = { branch?: string; servers: Server[] };
  * A server that has died still appears, in red. Filtering to the healthy ones made a crashed
  * backend *vanish* from the bar, which is the opposite of what a status indicator is for.
  */
-export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string) => void }) {
+export function LiveStatus({
+  onBranch,
+  projectId,
+  sessionId,
+}: {
+  readonly onBranch?: (branch?: string) => void;
+  readonly projectId?: string;
+  readonly sessionId?: string;
+}) {
   const [status, setStatus] = useState<Status>({ servers: [] });
   const [logsFor, setLogsFor] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
 
   useEffect(() => {
     const tick = () =>
@@ -48,12 +59,55 @@ export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string)
     return () => clearInterval(id);
   }, [onBranch]);
 
-  if (status.servers.length === 0) return null;
-
   const anyDown = status.servers.some((server) => !server.running);
+  const anyUp = status.servers.some((server) => server.running);
+
+  /** Start and stop are the same call with a different verb; the poll tells the truth after. */
+  const run = async (action: "start" | "stop") => {
+    setPending(true);
+    setError(undefined);
+    try {
+      const response = await fetch("/api/agent/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, projectId, sessionId }),
+      });
+      const body = (await response.json()) as { message?: string };
+      if (!response.ok) setError(body.message ?? "Could not start the project.");
+      else setStatus(await (await fetch("/api/agent/status")).json());
+    } catch {
+      setError("Could not reach becode.");
+    } finally {
+      setPending(false);
+    }
+  };
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-xs">
+      {error ? <span className="truncate text-destructive">{error}</span> : null}
+
+      {projectId || anyUp ? (
+        <Button
+          className="shrink-0"
+          disabled={pending || (!anyUp && !projectId)}
+          onClick={() => void run(anyUp ? "stop" : "start")}
+          size="sm"
+          type="button"
+          variant="secondary"
+        >
+          {pending ? (
+            <Loader2Icon className="size-3.5 animate-spin" />
+          ) : anyUp ? (
+            <SquareIcon className="size-3.5" />
+          ) : (
+            <PlayIcon className="size-3.5" />
+          )}
+          {anyUp ? "Stop" : "Start"}
+        </Button>
+      ) : null}
+
+      {status.servers.length === 0 ? null : (
+      <>
       <span aria-hidden className="relative flex size-2 shrink-0">
         {anyDown ? (
           <span className="relative inline-flex size-2 rounded-full bg-destructive" />
@@ -71,6 +125,8 @@ export function LiveStatus({ onBranch }: { readonly onBranch?: (branch?: string)
       ))}
 
       <ServerLogs name={logsFor} onOpenChange={(open) => !open && setLogsFor(undefined)} />
+      </>
+      )}
     </div>
   );
 }

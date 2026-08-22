@@ -206,7 +206,7 @@ export function AgentChat() {
           <span className="truncate text-muted-foreground text-sm">
             {agent.projectId ? `${AGENT_NAME} · ${agent.projectId}` : AGENT_NAME}
           </span>
-          <LiveStatus onBranch={setLiveBranch} />
+          <LiveStatus onBranch={setLiveBranch} projectId={agent.projectId} sessionId={agent.openChatId} />
         </header>
 
         {agent.error ? (
@@ -228,7 +228,7 @@ export function AgentChat() {
           <MessageScroller
             busy={isBusy}
             className="min-h-0 flex-1"
-            contentClassName="mx-auto w-full max-w-3xl gap-10 px-4 py-6 sm:px-6"
+            contentClassName="mx-auto flex w-full max-w-3xl flex-col gap-10 px-4 py-6 sm:px-6"
             label={`${AGENT_NAME} transcript`}
           >
             {agent.messages.map((message) =>
