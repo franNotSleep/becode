@@ -190,7 +190,7 @@ export function AgentChat() {
           <MessageScroller
             busy={isBusy}
             className="min-h-0 flex-1"
-            contentClassName="mx-auto w-full max-w-3xl gap-6 px-4 py-6 sm:px-6"
+            contentClassName="mx-auto w-full max-w-3xl gap-10 px-4 py-6 sm:px-6"
             label={`${AGENT_NAME} transcript`}
           >
             {agent.messages.map((message) =>

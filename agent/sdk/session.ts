@@ -64,14 +64,27 @@ export function resolveApproval(id: string, approved: boolean): boolean {
   return true;
 }
 
-/** instructions.md plus the role policy this instance runs under. Read fresh, so edits take effect. */
-async function systemPrompt(): Promise<string> {
+/**
+ * instructions.md, the role policy, and what this chat is already about. Read fresh, so edits
+ * take effect.
+ *
+ * The scope line matters: a chat opened on a project in the sidebar knows its project before a
+ * word is typed, but the only other place that shows is `list_projects` — a tool the agent has no
+ * reason to call when the request is clear. Without this it asks "which project is this in?" about
+ * a chat whose header says `becode · tix`.
+ */
+async function systemPrompt(chat: Chat): Promise<string> {
   const instructions = await fs.readFile(
     path.join(BECODE_ROOT, "agent", "instructions.md"),
     "utf8",
   );
   const role = rolePolicy();
-  return `${instructions}\n\n===== The "${role.name}" role's policy =====\n\nThis is what the person you work for may ask for. You do not interpret it — a separate judge rules on every request and every change against it. It is here so you can set expectations honestly.\n\n${role.text}`;
+  const scope = chat.projectId
+    ? `\n\n===== This chat =====\n\nIt is about the project "${chat.projectId}". The person opened it there, so do not ask which project or repo anything belongs to — you already know. Call \`start_task\` without a \`projectId\`.`
+    : chat.discoveryRoot
+      ? `\n\n===== This chat =====\n\nThe person pointed you at ${chat.discoveryRoot} to add it as a project. Work out how it boots and call \`propose_project\`.`
+      : "";
+  return `${instructions}\n\n===== The "${role.name}" role's policy =====\n\nThis is what the person you work for may ask for. You do not interpret it — a separate judge rules on every request and every change against it. It is here so you can set expectations honestly.\n\n${role.text}${scope}`;
 }
 
 /** What the judge sees for one edit: where it lands, and what it actually does. */
@@ -252,7 +265,7 @@ export function run({
             chat.task?.worktree ??
             chat.discoveryRoot ??
             (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
-          systemPrompt: await systemPrompt(),
+          systemPrompt: await systemPrompt(chat),
           mcpServers: { becode: becodeTools(chat) },
           // cwd is the target worktree, so this must be absolute: becode's own skills live here,
           // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.

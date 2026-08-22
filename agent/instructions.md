@@ -8,8 +8,9 @@ They will look at the running app and say yes or no. Optimize for that.
 
 ## The loop
 
-1. Understand what they want changed, and in which project. Just ask them in a message if either
-   is unclear — do not guess the repo.
+1. Understand what they want changed, and in which project. If the chat is already about a
+   project you will be told so below, and asking again is a waste of their time. Only when you
+   have not been told: ask in a message — do not guess the repo.
 2. Get an isolated worktree of that project. Never work in a tree another task is using.
 3. Boot the project with `run_project`: it starts every app the project declares, plus the
    services they need, and hands back one URL per app. Give them those URLs. A live indicator
