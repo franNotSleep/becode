@@ -71,6 +71,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | What may be attached, and what it becomes | `agent/lib/attachments.ts` (`npm run check:attachments`) |
 | git worktree / diff helpers | `agent/lib/git.ts` |
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
+| Filing the Linear issue a PR is tracked by | `agent/lib/linear.ts` |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Always-on system prompt | `agent/instructions.md` |
 | HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts` |
@@ -311,6 +312,36 @@ so either one would silently bypass the policy for the tools it covers. Narrow t
 `disallowedTools` only. If that ever changes, move the judge to a `PreToolUse` hook: hooks run
 before every other step and a hook deny holds even under `bypassPermissions`.
 
+## Linear
+
+Every pull request becode opens is filed as a Linear issue first (`agent/lib/linear.ts`), and the
+issue identifier goes into the pushed branch name: `becode/tix-123-<slug>`. That name is the whole
+link — Linear's GitHub integration attaches the PR, and moves the issue on open and on merge. The
+state machine is a feature Linear already ships; becode does not reimplement it.
+
+**At PR time, not at `start_task`.** An issue created when a chat starts would be an outbound write
+to a shared workspace on the weakest gate becode has — gate 1 judges the agent's *restatement* of
+the request — and every abandoned experiment would leave one behind. Inside `open_pull_request`,
+gate 3 has already judged the real diff and a person has already clicked approve. The cost is that
+work in progress is untraced; that was the trade.
+
+**The branch is not renamed locally.** `git push origin HEAD:refs/heads/<name>` puts the identifier
+on GitHub, which is the only place Linear reads it. A local `git branch -m` would have broken the
+release at the end of the same function: `appOwner` is keyed on the branch `run_project` booted the
+apps under, so `takeAppPorts(undefined, current.branch)` would silently miss and leave dev servers
+on :3000/:3002 serving a worktree the next task is about to reuse.
+
+**Linear failing does not stop a PR.** `fileIssue` is caught, not awaited into a throw: the PR opens
+on `becode/<slug>`, untracked, and the tool result carries a warning the agent is told to relay.
+`LINEAR_API_KEY` absent is not an error at all — `hasLinear()` skips the call. The key is stripped
+by `childEnv` like every other credential; `check:boot` asserts it.
+
+Both references are kept in `Chat.shipped[]` (`agent/lib/task.ts`) rather than on `Task`, because
+`open_pull_request` ends the task with `setTask(chat, null)` one line after the PR URL arrives — the
+moment both references first exist is the moment `Task` is destroyed. The transcript renders them
+through `@beui/citations` in `agent-message.tsx`, derived from the `open_pull_request` tool row
+rather than a new event, so a reopened chat shows them with no second read path.
+
 ## Skills
 
 Two sets, different audiences. Both are committed, so a clone gets them.
@@ -333,7 +364,7 @@ squarely inside its scope. Still available to Claude Code at user level.
 **`agent/skills/`** — loaded on demand by the becode agent at runtime, when it works on a *target*
 repo. They reach it through the plugin at `agent/` (`agent/.claude-plugin/plugin.json`), because
 the agent's `cwd` is the target worktree and a project-local `.claude/` would be the wrong repo's.
-There are 4:
+There are 5:
 
 | Skill | For |
 | --- | --- |
@@ -341,6 +372,15 @@ There are 4:
 | `design-taste-frontend` | Landing pages, portfolios, marketing surfaces — the marketing role's actual territory |
 | `high-end-visual-design` | Craft standards |
 | `redesign-existing-projects` | Audit-first, framework-agnostic |
+| `impeccable` | Craft direction and its sub-commands (`shape`, `critique`, `audit`, `polish`, …) |
+
+`impeccable` comes from `npx impeccable install` (npm, `impeccable.style`), which writes to
+`~/.claude/skills/` — a path `settingSources: []` means the SDK never reads. Only `SKILL.md` and
+`reference/` are copied here; the 3MB `scripts/` is not, because `Bash` is removed from the agent's
+tool surface and every one of its detectors, screenshot passes and `npx impeccable` calls is a
+command the agent cannot run. `SKILL.md`'s Setup section is rewritten to say so — otherwise the
+first thing the skill does is spend a turn on a denied `node scripts/context.mjs`. That makes this
+copy a fork: re-run the installer for the global copy, then re-copy and re-apply the Setup edit.
 
 One caveat on `design-taste-frontend` here: parts of it assume a shell (`npx shadcn@latest add`)
 and image generation. becode has neither — `Bash` is removed from the tool surface entirely. It

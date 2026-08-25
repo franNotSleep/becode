@@ -38,6 +38,11 @@ const env = childEnv(
 );
 assert.equal(env.PORT, undefined, "becode's own PORT never reaches a child");
 assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined, "nor its token");
+assert.equal(
+  childEnv({ ...process.env, LINEAR_API_KEY: "lin_api_secret" }, {}).LINEAR_API_KEY,
+  undefined,
+  "nor the Linear key becode files issues with",
+);
 assert.equal(env.BECODE_MAX_TURNS, undefined, "nor its own settings");
 assert.equal(env.PATH, "/usr/bin", "everything else is passed through");
 assert.equal(childEnv({ ...process.env, PORT: "4000" }, { PORT: "3002" }).PORT, "3002", "an explicit port still wins");

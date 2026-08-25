@@ -36,6 +36,25 @@ export type Chat = {
    */
   discoveryRoot?: string;
   task: Task;
+  /**
+   * What this chat has shipped, newest last.
+   *
+   * An array rather than a field on `Task`, for two reasons: `open_pull_request` ends the task
+   * with `setTask(chat, null)` one line after the PR URL arrives, so anything hung off `Task`
+   * is destroyed at the exact moment both references first exist; and a chat can start a second
+   * task after shipping the first.
+   */
+  shipped?: Shipped[];
+};
+
+/** One change that left the machine: the PR, and the Linear issue it was filed under. */
+export type Shipped = {
+  /** `TIX-123`. Absent when Linear was unreachable or unconfigured — the PR still opened. */
+  issue?: string;
+  issueUrl?: string;
+  prUrl: string;
+  branch: string;
+  at: number;
 };
 
 const chats = new Map<string, Chat>();
@@ -78,6 +97,17 @@ export function rememberChat(chat: Chat, sessionId: string): void {
  */
 export function setTask(chat: Chat, task: Task): void {
   chat.task = task;
+  if (chat.sessionId) saveChatState(chat.sessionId, chat);
+}
+
+/**
+ * Record a change that reached a pull request.
+ *
+ * Written before `setTask(chat, null)`, never after: the task is the only thing holding the branch
+ * the PR was opened on.
+ */
+export function recordShipped(chat: Chat, entry: Shipped): void {
+  chat.shipped = [...(chat.shipped ?? []), entry];
   if (chat.sessionId) saveChatState(chat.sessionId, chat);
 }
 

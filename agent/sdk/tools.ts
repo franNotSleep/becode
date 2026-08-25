@@ -11,7 +11,8 @@ import { isListening } from "../lib/ports.ts";
 import { appUrls, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { activeTask, type Chat, resolveInWorktree, setTask } from "../lib/task.ts";
+import { fileIssue, hasLinear } from "../lib/linear.ts";
+import { activeTask, type Chat, recordShipped, resolveInWorktree, setTask } from "../lib/task.ts";
 import { judgeRequest } from "./judge.ts";
 
 const exec = promisify(execFile);
@@ -241,7 +242,9 @@ export function becodeTools(chat: Chat) {
   const openPullRequest = tool(
     "open_pull_request",
     "Open a pull request with the work in the current task worktree. This is the only way a " +
-      "change leaves becode. Call it once the user has looked at the running app and approved.",
+      "change leaves becode. Call it once the user has looked at the running app and approved. " +
+      "A Linear issue is filed first and its identifier goes in the branch name, so the PR and " +
+      "the issue link up. If the result carries a warning, the PR is open but untracked — say so.",
     {
       title: z.string().describe("PR title, in the user's words, not a commit-message summary."),
       body: z
@@ -258,21 +261,64 @@ export function becodeTools(chat: Chat) {
       const files = await changedFiles(current.worktree);
 
       await git(current.worktree, "commit", "-m", title, "-m", body);
-      await git(current.worktree, "push", "--set-upstream", "origin", current.branch);
+
+      // Linear first, because the identifier has to be in the branch name before it is pushed —
+      // that name is the whole link. A failure here is a warning, never a throw: an outage in the
+      // bookkeeping must not strand a committed change with no way out.
+      const issue = hasLinear()
+        ? await fileIssue({
+            title,
+            request: current.request,
+            body,
+            branch: current.branch,
+            projectId: current.projectId,
+          }).catch((error: Error) => error)
+        : undefined;
+      const filed = issue instanceof Error ? undefined : issue;
+
+      // Pushed under the issue's name, not renamed to it. `appOwner` (below) is keyed on the
+      // branch `run_project` booted the apps under, so a local `git branch -m` would make the
+      // release miss and leave dev servers on :3000/:3002 serving a worktree the next task reuses.
+      // GitHub is the only place the name has to be right — Linear reads it there.
+      const head = filed
+        ? `becode/${filed.identifier.toLowerCase()}-${current.branch.replace(/^becode\//, "")}`
+        : current.branch;
+
+      await git(current.worktree, "push", "--set-upstream", "origin", `HEAD:refs/heads/${head}`);
 
       const { stdout } = await exec(
         "gh",
-        ["pr", "create", "--base", project.baseBranch, "--head", current.branch, "--title", title, "--body", body],
+        ["pr", "create", "--base", project.baseBranch, "--head", head, "--title", title, "--body", body],
         { cwd: current.worktree },
       );
 
       const url = stdout.trim().split("\n").pop() ?? "";
+      recordShipped(chat, {
+        issue: filed?.identifier,
+        issueUrl: filed?.url,
+        prUrl: url,
+        branch: head,
+        at: Date.now(),
+      });
       setTask(chat, null);
 
       // The apps were serving this worktree. Left running, the next task would show its code.
-      // Only this chat's, though — another chat may have taken the ports since.
+      // Only this chat's, though — another chat may have taken the ports since. `current.branch`,
+      // not `head`: the local branch never moved, and that is what took the ports.
       takeAppPorts(undefined, current.branch);
-      return reply({ url, branch: current.branch, files });
+      return reply({
+        url,
+        branch: head,
+        files,
+        ...(filed ? { issue: filed.identifier, issueUrl: filed.url } : {}),
+        ...(issue instanceof Error
+          ? {
+              warning:
+                `The pull request is open, but Linear did not accept the issue (${issue.message}). ` +
+                `Tell the user it is untracked, and that the branch is ${head}.`,
+            }
+          : {}),
+      });
     },
   );
 
@@ -391,15 +437,18 @@ const serverUp = async (server: Server) =>
  * its own env. `NEXT_*` goes too: becode's own public vars would otherwise be inlined into a
  * target's bundle. Everything a target needs is in its own env files, which the worktree gets.
  *
- * The credentials go too. becode's token is for becode; a target repo's dev server has no business
- * being handed it just because it happens to be a child process.
+ * The credentials go too — the Anthropic token and the Linear key alike. becode's credentials are
+ * for becode; a target repo's dev server has no business being handed one just because it happens
+ * to be a child process.
  */
 export function childEnv(
   base: NodeJS.ProcessEnv,
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const inherited = { ...base };
-  for (const key of ["PORT", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]) delete inherited[key];
+  for (const key of ["PORT", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "LINEAR_API_KEY"]) {
+    delete inherited[key];
+  }
   for (const key of Object.keys(inherited)) {
     if (key.startsWith("BECODE_") || key.startsWith("NEXT_") || key.startsWith("__NEXT_")) {
       delete inherited[key];

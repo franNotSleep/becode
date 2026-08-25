@@ -8,6 +8,7 @@ import { FileTextIcon } from "lucide-react";
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { AgentActivity } from "@/components/agents/agent-activity";
+import { type CitationItem, Citations } from "@/components/agents/citations";
 import {
   Message,
   MessageBubble,
@@ -99,6 +100,37 @@ export function AgentMessage({
   );
 }
 
+/**
+ * The issue and the pull request a shipped change produced, read back off the tool row.
+ *
+ * Derived from the transcript the client already holds rather than a new event: a reopened chat
+ * replays `open_pull_request` through the same reducer, so this renders there too with no second
+ * read path. The output is JSON becode wrote itself, but it arrives here as a truncated string
+ * (transcript.ts caps tool results at 2000 chars), so a parse failure is normal — not an error.
+ *
+ * The tool name is spelled out rather than imported from `TOOL` in agent/sdk/tools.ts, for the
+ * same reason `shippable` in agent-chat.tsx spells it out: that module spawns processes.
+ */
+function shippedLinks(name: string, output?: string): CitationItem[] {
+  if (name !== "mcp__becode__open_pull_request" || !output) return [];
+
+  let result: { url?: string; issue?: string; issueUrl?: string };
+  try {
+    result = JSON.parse(output);
+  } catch {
+    return [];
+  }
+
+  const items: CitationItem[] = [];
+  if (result.issue && result.issueUrl) {
+    items.push({ id: "issue", title: result.issue, domain: "linear.app", url: result.issueUrl });
+  }
+  if (result.url) {
+    items.push({ id: "pr", title: "Pull request", domain: "github.com", url: result.url });
+  }
+  return items;
+}
+
 function plainText(message: BecodeMessage): string {
   return message.parts
     .map((part) => (part.type === "text" ? part.text : ""))
@@ -131,14 +163,21 @@ function AgentMessagePart({
           summary="Thought about it"
         />
       );
-    case "tool":
+    case "tool": {
+      const shipped = part.state === "success" ? shippedLinks(part.name, part.output) : [];
       return (
-        <ToolResult status={part.state} title={part.title} tool={part.name}>
-          <ToolResultOutput language="json">
-            {part.output ?? stringify(part.input)}
-          </ToolResultOutput>
-        </ToolResult>
+        <>
+          <ToolResult status={part.state} title={part.title} tool={part.name}>
+            <ToolResultOutput language="json">
+              {part.output ?? stringify(part.input)}
+            </ToolResultOutput>
+          </ToolResult>
+          {shipped.length > 0 ? (
+            <Citations citations={shipped} defaultOpen title="Where this change went" />
+          ) : null}
+        </>
       );
+    }
     case "approval":
       return (
         <ToolApproval
