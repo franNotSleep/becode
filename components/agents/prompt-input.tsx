@@ -63,6 +63,12 @@ export interface PromptInputProps extends Omit<
   minRows?: number;
   maxRows?: number;
   leadingAction?: ReactNode;
+  /**
+   * becode fork: paint part of the text. A textarea cannot colour its own content, so what this
+   * returns is mirrored into an overlay under a transparent-text textarea — it MUST render exactly
+   * the string it is given, or the two drift apart character by character.
+   */
+  highlight?: (value: string) => ReactNode;
   className?: string;
 }
 
@@ -82,6 +88,7 @@ export function PromptInput({
   minRows = 2,
   maxRows = 8,
   leadingAction,
+  highlight,
   className,
   disabled,
   placeholder = "Ask the agent to do something…",
@@ -92,6 +99,7 @@ export function PromptInput({
   const reduce = useReducedMotion() ?? false;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const measurementRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const [internalValue, setInternalValue] = useState(defaultValue);
   const [internalModel, setInternalModel] = useState(
     defaultModel ?? models[0]?.value,
@@ -180,9 +188,27 @@ export function PromptInput({
       >
         {`${currentValue}\u200b`}
       </div>
+      {highlight ? (
+        <div
+          ref={overlayRef}
+          aria-hidden="true"
+          className="scrollbar-hide pointer-events-none absolute inset-x-2 top-0 max-h-full overflow-hidden whitespace-pre-wrap px-2 pt-1.5 text-sm leading-6 text-foreground [overflow-wrap:break-word]"
+        >
+          {highlight(currentValue)}
+        </div>
+      ) : null}
       <textarea
         ref={textareaRef}
         value={currentValue}
+        onScroll={
+          highlight
+            ? (event) => {
+                if (overlayRef.current) {
+                  overlayRef.current.scrollTop = event.currentTarget.scrollTop;
+                }
+              }
+            : undefined
+        }
         disabled={disabled}
         placeholder={placeholder}
         aria-label={ariaLabel}
@@ -190,7 +216,10 @@ export function PromptInput({
         {...textareaProps}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={handleKeyDown}
-        className="scrollbar-hide block w-full resize-none overflow-y-auto bg-transparent px-2 pt-1.5 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/55"
+        className={cn(
+          "scrollbar-hide relative block w-full resize-none overflow-y-auto bg-transparent px-2 pt-1.5 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/55",
+          highlight && "text-transparent caret-foreground selection:bg-foreground/25",
+        )}
       />
 
       <div className="mt-1 flex min-h-8 items-center gap-1">

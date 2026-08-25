@@ -11,6 +11,7 @@ import { Button } from "@/components/motion/button";
 import { badgeVariants } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { suggest } from "@/lib/skill-suggestions";
+import { tokenize, typingSkill } from "@/lib/skill-tokens";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
 import { ChatSidebar } from "./chat-sidebar";
@@ -19,7 +20,7 @@ import { useBecodeAgent } from "./use-becode-agent";
 
 const AGENT_NAME = "becode";
 
-export function AgentChat() {
+export function AgentChat({ skills }: { readonly skills: string[] }) {
   const agent = useBecodeAgent();
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
   const isEmpty = agent.messages.length === 0;
@@ -68,6 +69,25 @@ export function AgentChat() {
   const [draft, setDraft] = useState("");
   const composerBox = useRef<HTMLDivElement>(null);
   const suggestions = useMemo(() => (isBusy ? [] : suggest(draft)), [draft, isBusy]);
+
+  /**
+   * The skill being typed, read off the end of the draft rather than the caret.
+   *
+   * ponytail: the caret would need React's synthetic `onSelect`, which only fires under focus and
+   * is the kind of thing that breaks quietly. Going back to fix a `/skill` mid-sentence gets no
+   * menu; typing one gets it every time. Track the caret if editing in place ever matters.
+   */
+  const slashPrefix = typingSkill(draft, draft.length);
+  const slashMatches = useMemo(
+    () => (slashPrefix === null ? [] : skills.filter((name) => name.startsWith(slashPrefix))),
+    [skills, slashPrefix],
+  );
+
+  /** Completing replaces the half-typed token, so slice it off rather than appending. */
+  const completeSkill = (name: string) => {
+    setDraft(draft.slice(0, draft.length - (slashPrefix?.length ?? 0)) + name + " ");
+    composerBox.current?.querySelector("textarea")?.focus();
+  };
 
   /** Append the routing sentence, then hand the caret back — nothing else refocuses on click. */
   const applySuggestion = (append: string) => {
@@ -158,7 +178,24 @@ export function AgentChat() {
           </ul>
         ) : null}
 
-        {suggestions.length > 0 ? (
+        {slashMatches.length > 0 ? (
+          <ul className="flex flex-wrap gap-1.5 px-1 pt-1 pb-2">
+            {slashMatches.map((name) => (
+              <li key={name}>
+                <button
+                  className={cn(
+                    badgeVariants({ variant: "outline" }),
+                    "cursor-pointer font-mono text-skill transition-colors hover:bg-muted",
+                  )}
+                  onClick={() => completeSkill(name)}
+                  type="button"
+                >
+                  /{name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : suggestions.length > 0 ? (
           <ul className="flex flex-wrap gap-1.5 px-1 pt-1 pb-2">
             {suggestions.map((suggestion) => (
               <li key={suggestion.id}>
@@ -202,6 +239,19 @@ export function AgentChat() {
             event.preventDefault();
             void addFiles(files);
           }}
+          highlight={(text) =>
+            tokenize(text, skills).map((token, index) =>
+              token.skill ? (
+                // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional by nature
+                <span className="text-skill" key={index}>
+                  {token.text}
+                </span>
+              ) : (
+                // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional by nature
+                <span key={index}>{token.text}</span>
+              ),
+            )
+          }
           onStop={agent.cancel}
           onSubmit={handleSubmit}
           onValueChange={setDraft}

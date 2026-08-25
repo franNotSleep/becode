@@ -465,6 +465,26 @@ Two notes:
   its textarea private, so a chip has no way in unless `value` is passed. Note `submit()` only
   clears `internalValue`, and only when uncontrolled — `handleSubmit` now clears `draft` itself, or
   the chips stay pinned under an empty composer.
+- **Typing a skill, and painting it.** Every skill is a slash command: the SDK's `SlashCommand.name`
+  *is* the skill name, and the plugin registers becode's five as `becode:<name>` with the bare
+  `<name>` as an alias — both resolve. `app/page.tsx` is a server component, so the list is
+  `agent/lib/skills.ts` reading the directory, not a route and not a fetch.
+
+  **Only a leading token expands.** Verified against a live session: with a prompt starting
+  `/impeccable …` the model quotes the skill body verbatim while `Read` is disallowed, so the
+  content was injected; move the same token one word in and it answers "NONE". `lib/skill-tokens.ts`
+  is therefore a position rule, not a search-and-replace — painting a mid-sentence `/impeccable`
+  would promise something that never happens. `check:tokens` holds both that and the invariant that
+  matters for the overlay: the tokens must cover the input exactly.
+
+  This is also why the suggestion chips append plain English rather than a slash command: they land
+  mid-prompt, where a command is only ever text.
+
+  Painting it costs `PromptInput` a second small fork. A textarea cannot colour part of its own
+  content, so `highlight` renders a mirror div under a `text-transparent caret-foreground` textarea,
+  sharing the typography of the autosize measurement div that was already there and syncing
+  `scrollTop`. `--skill` in `app/globals.css` is the one chromatic value in an otherwise fully
+  neutral palette, and it exists for this alone.
 - **The sidebar is hand-rolled.** `@beui/ai-sidebar` was installed and removed: no trailing-action
   slot for the `+`, no controlled expansion (a collapsed row cannot be reopened from state), and a
   drag-to-move affordance that would be a lie — a chat belongs to the worktree it created. Three
@@ -514,6 +534,7 @@ npm run check:ports          # finds and frees a real listener — starts one, k
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
 npm run check:impeccable     # design context: found, found-but-uncommitted, absent
 npm run check:suggestions    # the composer chips: threshold, ranking, cap
+npm run check:tokens         # slash tokens: leading-only, exact coverage, real skills only
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires

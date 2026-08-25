@@ -22,7 +22,8 @@
     "check:ports": "node --experimental-strip-types agent/lib/ports.check.ts",
     "check:logs": "node --experimental-strip-types agent/lib/logs.check.ts",
     "check:impeccable": "node --experimental-strip-types agent/lib/impeccable.check.ts",
-    "check:suggestions": "node --experimental-strip-types lib/skill-suggestions.check.ts"
+    "check:suggestions": "node --experimental-strip-types lib/skill-suggestions.check.ts",
+    "check:tokens": "node --experimental-strip-types lib/skill-tokens.check.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.239",
