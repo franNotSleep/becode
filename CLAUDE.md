@@ -382,6 +382,27 @@ command the agent cannot run. `SKILL.md`'s Setup section is rewritten to say so 
 first thing the skill does is spend a turn on a denied `node scripts/context.mjs`. That makes this
 copy a fork: re-run the installer for the global copy, then re-copy and re-apply the Setup edit.
 
+**A target repo's impeccable context is the design system, when it has one.** Impeccable keeps
+`PRODUCT.md` (what the product is and who for) and `DESIGN.md` (its tokens, and the reasoning) at a
+project root, with a sidecar at `.impeccable/design.json`. `start_task` reports which of them the
+worktree carries (`agent/lib/impeccable.ts`), and `design-system-first` says to read them first.
+
+The third state is why that is a file rather than four inline stats. `git worktree add` copies
+**tracked** files only, so a repo where someone ran the installer and never committed looks exactly
+like a repo that never had impeccable — from inside the worktree, which is all a task ever sees. So
+detection stats the source checkout too, and `uncommitted` gets a different answer from `missing`:
+one needs a commit, the other needs an install first. `check:impeccable` drives all three.
+
+The commands themselves live in `app/_components/impeccable-setup.tsx`, not beside the detection —
+`agent/lib/impeccable.ts` reads the filesystem, and importing it into a client component would drag
+`node:fs` into the bundle. Only the type crosses, and a type is erased. The card is derived from the
+`start_task` tool row exactly as `shippedLinks` derives citations from `open_pull_request`, so a
+reopened chat renders it with no second read path.
+
+becode does not run the installer. `/impeccable init` interviews the person and `/impeccable
+document` reads their code — becode's agent has neither `Bash` nor `AskUserQuestion`, so both are a
+Claude Code session in the target repo. becode's job is to notice it has not happened.
+
 One caveat on `design-taste-frontend` here: parts of it assume a shell (`npx shadcn@latest add`)
 and image generation. becode has neither — `Bash` is removed from the tool surface entirely. It
 can still author component files by hand; it cannot run the installer.
@@ -435,6 +456,15 @@ Two notes:
   has, so a reopened chat gets it too and there is no second poll. `start_task` would be the wrong
   signal: a policy refusal is still a successful call. The pill replaces the typing, not the
   confirmation — gate 3 still judges the real diff and still renders the approval card.
+- **Skill chips while typing.** `lib/skill-suggestions.ts` maps how a person describes a problem
+  ("cramped", "bland", "loud") to the skill that handles it. The chip reads as plain language, the
+  real name (`impeccable · critique`) is on hover, and the *prompt* gets the precise sentence — so
+  the CEO never types jargon and the agent never has to guess. Keyword counting over an eight-row
+  table: no dependency, no debounce, no server call, and `check:suggestions` guards the ranking.
+  This costs the composer its uncontrolled `PromptInput`: the component forwards no ref and keeps
+  its textarea private, so a chip has no way in unless `value` is passed. Note `submit()` only
+  clears `internalValue`, and only when uncontrolled — `handleSubmit` now clears `draft` itself, or
+  the chips stay pinned under an empty composer.
 - **The sidebar is hand-rolled.** `@beui/ai-sidebar` was installed and removed: no trailing-action
   slot for the `+`, no controlled expansion (a collapsed row cannot be reopened from state), and a
   drag-to-move affordance that would be a lie — a chat belongs to the worktree it created. Three
@@ -482,6 +512,8 @@ npm run check:db             # the store: project round-trip, and a chat keeping
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
+npm run check:impeccable     # design context: found, found-but-uncommitted, absent
+npm run check:suggestions    # the composer chips: threshold, ranking, cap
 npm run build                # next build
 npm run dev                  # the app
 claude setup-token           # re-mint the subscription token when it expires

@@ -10,6 +10,7 @@ import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts
 import { isListening } from "../lib/ports.ts";
 import { appUrls, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
+import { impeccableContext, type ImpeccableState } from "../lib/impeccable.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { fileIssue, hasLinear } from "../lib/linear.ts";
 import { activeTask, type Chat, recordShipped, resolveInWorktree, setTask } from "../lib/task.ts";
@@ -21,6 +22,24 @@ const exec = promisify(execFile);
 const reply = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
 });
+
+/**
+ * What each impeccable state means for the turn that just started a task.
+ *
+ * `uncommitted` is the one the person has to act on, and the agent is the only thing that can see
+ * it — the files are right there in their editor, and invisible to every worktree.
+ */
+const IMPECCABLE_NEXT: Record<ImpeccableState, (files: string[]) => string> = {
+  ready: (files) =>
+    `This project carries impeccable design context in ${files.join(", ")} — read it before any ` +
+    `visual change. It outranks your own taste.`,
+  uncommitted: () =>
+    "Impeccable is set up in the checkout but not committed, so this worktree cannot see it. Tell " +
+    "the person, in plain language, that committing it would let you work from their design system.",
+  missing: () =>
+    "This project has no impeccable design context. Mention it once, then carry on from whatever " +
+    "design system the repo does have.",
+};
 
 /**
  * becode's tools, bound to one chat.
@@ -102,17 +121,21 @@ export function becodeTools(chat: Chat) {
         }),
       );
 
+      const impeccable = impeccableContext(dir, project.path);
+
       return reply({
         started: true,
         branch,
         worktree: dir,
         designSystem,
+        impeccable,
         next:
           `Use absolute paths under ${dir} for the rest of this turn — the working directory was ` +
           `fixed before this worktree existed. ` +
           (designSystem.length
-            ? "Read the design system files before making any visual change."
-            : "No design system is configured for this project."),
+            ? "Read the design system files before making any visual change. "
+            : "No design system is configured for this project. ") +
+          IMPECCABLE_NEXT[impeccable.state](impeccable.files),
       });
     },
   );

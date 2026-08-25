@@ -13,6 +13,10 @@ invent is one they now have to notice, review, and live with.
 
 1. Read the design system files `start_task` listed. If it listed none, find them: the theme or
    Tailwind config, the global stylesheet, the token file, the component directory.
+   `start_task` also reports whether the project carries impeccable's own context — `PRODUCT.md`
+   (what the product is and who it is for) and `DESIGN.md` (its tokens, and the reasoning behind
+   them). When it does, that is the design system, written down on purpose. Read it first and
+   follow it over any general taste guidance, this file included.
 2. Find the closest existing thing to what you need — a token, a utility, a variant, a component.
 3. Read a neighbouring component that already does something similar, and copy how it does it.
 

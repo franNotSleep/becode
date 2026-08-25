@@ -8,6 +8,9 @@ import { Message, MessageContent } from "@/components/agents/message";
 import { MessageScroller } from "@/components/agents/message-scroller";
 import { PromptInput } from "@/components/agents/prompt-input";
 import { Button } from "@/components/motion/button";
+import { badgeVariants } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { suggest } from "@/lib/skill-suggestions";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
 import { ChatSidebar } from "./chat-sidebar";
@@ -60,6 +63,18 @@ export function AgentChat() {
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // The composer is controlled only so a chip can write into it: PromptInput forwards no ref and
+  // keeps its textarea private, so with `value` left undefined there is no way in.
+  const [draft, setDraft] = useState("");
+  const composerBox = useRef<HTMLDivElement>(null);
+  const suggestions = useMemo(() => (isBusy ? [] : suggest(draft)), [draft, isBusy]);
+
+  /** Append the routing sentence, then hand the caret back — nothing else refocuses on click. */
+  const applySuggestion = (append: string) => {
+    setDraft((previous) => (previous.trimEnd() + " " + append).trimStart());
+    composerBox.current?.querySelector("textarea")?.focus();
+  };
+
   /** Same allowlist the route enforces; this half only exists so a mistake reads immediately. */
   const addFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -90,6 +105,7 @@ export function AgentChat() {
     const sending = attachments;
     setAttachments([]);
     setAttachError(undefined);
+    setDraft("");
     await agent.send(text, sending);
   };
 
@@ -125,6 +141,7 @@ export function AgentChat() {
           setDragging(false);
           void addFiles([...event.dataTransfer.files]);
         }}
+        ref={composerBox}
       >
         {attachments.length > 0 ? (
           <ul className="flex flex-wrap gap-2 px-1 pt-1 pb-2">
@@ -136,6 +153,28 @@ export function AgentChat() {
                     setAttachments((previous) => previous.filter((_, i) => i !== index))
                   }
                 />
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {suggestions.length > 0 ? (
+          <ul className="flex flex-wrap gap-1.5 px-1 pt-1 pb-2">
+            {suggestions.map((suggestion) => (
+              <li key={suggestion.id}>
+                <Tooltip>
+                  <TooltipTrigger
+                    className={cn(
+                      badgeVariants({ variant: "outline" }),
+                      "cursor-pointer transition-colors hover:bg-muted",
+                    )}
+                    onClick={() => applySuggestion(suggestion.append)}
+                    type="button"
+                  >
+                    {suggestion.chip}
+                  </TooltipTrigger>
+                  <TooltipContent>{suggestion.skill}</TooltipContent>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -165,9 +204,11 @@ export function AgentChat() {
           }}
           onStop={agent.cancel}
           onSubmit={handleSubmit}
+          onValueChange={setDraft}
           // ponytail: the beUI composer will not submit an empty textarea, so an attachment still
           // needs a word beside it. Fork PromptInput's `canSubmit` if that ever grates.
           placeholder={attachments.length > 0 ? "What should becode do with it?" : "What should change?"}
+          value={draft}
         />
       </div>
 

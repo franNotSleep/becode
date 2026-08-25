@@ -18,6 +18,7 @@ import {
 import { ToolApproval } from "@/components/agents/tool-approval";
 import { ToolResult, ToolResultOutput } from "@/components/agents/tool-result";
 import { dataUrl } from "./agent-chat";
+import { ImpeccableSetup, impeccableState } from "./impeccable-setup";
 import type { BecodeMessage, BecodePart } from "./use-becode-agent";
 
 type OnRespond = (id: string, approved: boolean) => void | Promise<void>;
@@ -164,7 +165,9 @@ function AgentMessagePart({
         />
       );
     case "tool": {
-      const shipped = part.state === "success" ? shippedLinks(part.name, part.output) : [];
+      const success = part.state === "success";
+      const shipped = success ? shippedLinks(part.name, part.output) : [];
+      const impeccable = success ? impeccableState(part.name, part.output) : null;
       return (
         <>
           <ToolResult status={part.state} title={part.title} tool={part.name}>
@@ -175,6 +178,7 @@ function AgentMessagePart({
           {shipped.length > 0 ? (
             <Citations citations={shipped} defaultOpen title="Where this change went" />
           ) : null}
+          {impeccable ? <ImpeccableSetup state={impeccable} /> : null}
         </>
       );
     }
