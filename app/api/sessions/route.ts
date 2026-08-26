@@ -1,5 +1,7 @@
 import { listSessions } from "@anthropic-ai/claude-agent-sdk";
 import { allProjects } from "@/agent/lib/db.ts";
+import { git } from "@/agent/lib/git.ts";
+import { type ProjectDesign, projectDesign } from "@/agent/lib/impeccable.ts";
 
 // Reads the SDK's session store off the local filesystem.
 export const runtime = "nodejs";
@@ -14,6 +16,10 @@ export const runtime = "nodejs";
  *
  * The `becode` tag is what separates these from the terminal sessions living in the same repo;
  * `session.ts` stamps it the first time a chat reports an id.
+ *
+ * Each project also carries its design context. It rides along here rather than on a route of its
+ * own because the sidebar already loops these projects and already refetches when a turn ends —
+ * a second route would only be a second fetch and a second loading state for a handful of stats.
  */
 export async function GET(request: Request) {
   const limit = Number(new URL(request.url).searchParams.get("limit") ?? 40);
@@ -23,6 +29,11 @@ export async function GET(request: Request) {
       const sessions = await listSessions({ dir: project.path, limit }).catch(() => []);
       return {
         id: project.id,
+        design: await projectDesign(project.path, (paths) =>
+          git(project.path, "ls-files", "--", ...paths).then((out) =>
+            out.split("\n").filter(Boolean),
+          ),
+        ),
         chats: sessions
           .filter((s) => s.tag === "becode")
           .map((s) => ({

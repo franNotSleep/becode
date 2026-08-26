@@ -25,14 +25,14 @@ export function impeccableState(name: string, output?: string): ImpeccableState 
   }
 }
 
-const SETUP_COMMAND = "npx impeccable install --scope=project --providers=claude";
+export const SETUP_COMMAND = "npx impeccable install --scope=project --providers=claude";
 
 /**
  * The installer only gitignores `.impeccable/config.local.json`, so everything carrying design
  * context is committable — and it has to be. `git worktree add` copies tracked files only, so
  * without this commit no task will ever see any of it.
  */
-const COMMIT_COMMAND =
+export const COMMIT_COMMAND =
   "git add PRODUCT.md DESIGN.md .impeccable && git commit -m 'Add impeccable design context' && git push";
 
 const Command = ({ code }: { readonly code: string }) => (

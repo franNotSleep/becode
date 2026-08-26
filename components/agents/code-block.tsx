@@ -163,7 +163,15 @@ export function CodeBlock({
         className="scrollbar-hide overflow-auto border-t border-foreground/[0.06] py-2"
         style={{ maxHeight }}
       >
-        <pre className="m-0 min-w-max font-mono text-xs leading-5 text-foreground/85">
+        {/* Local fix: `min-w-max` sizes the block to its longest line, which leaves
+            `whitespace-pre-wrap` nothing to wrap against — so `wrap` did nothing and a long command
+            was clipped by its container instead. The registry ships it unconditionally. */}
+        <pre
+          className={cn(
+            "m-0 font-mono text-xs leading-5 text-foreground/85",
+            wrap ? "min-w-0" : "min-w-max",
+          )}
+        >
           <code>
             {lines.map((line, index) => {
               const lineNumber = index + 1;

@@ -9,11 +9,15 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { ProjectDesign } from "@/agent/lib/impeccable";
 import { cn } from "@/lib/utils";
+import { DesignSystemCard } from "./design-system-card";
 import { ProjectPicker } from "./project-picker";
 
 export type ProjectChats = {
   id: string;
+  /** What becode knows about how this project looks. Rendered on the row by `DesignSystemCard`. */
+  design: ProjectDesign;
   chats: { sessionId: string; title: string; branch?: string; lastModified: number }[];
 };
 
@@ -134,6 +138,7 @@ export function ChatSidebar({
                   />
                   <span className="truncate">{project.id}</span>
                 </button>
+                <DesignSystemCard design={project.design} project={project.id} />
                 <button
                   aria-label={`New chat in ${project.id}`}
                   className="hidden size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:grid group-hover:grid"
