@@ -95,8 +95,15 @@ body {
   font-family: var(--font-sans);
 }
 
-button,
-input,
-textarea {
-  font: inherit;
+/*
+ * Unlayered, this beat every Tailwind font utility — utilities live in `@layer utilities`, and
+ * unlayered rules outrank every layer. The composer's textarea rendered at the body's 16px while
+ * its own `text-sm` said 14px, which only became visible once an overlay had to line up with it.
+ */
+@layer base {
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
 }

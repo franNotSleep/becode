@@ -181,23 +181,29 @@ export function PromptInput({
         className,
       )}
     >
-      <div
-        ref={measurementRef}
-        aria-hidden="true"
-        className="pointer-events-none invisible absolute inset-x-2 top-0 whitespace-pre-wrap px-2 text-sm leading-6 [overflow-wrap:break-word]"
-      >
-        {`${currentValue}\u200b`}
-      </div>
-      {highlight ? (
+      {/*
+        becode fork: the mirrors are positioned against the textarea's own box, not the form's.
+        `inset-x-2` assumed the form's default `p-2`; a caller that strips the padding shifted both
+        of them 8px sideways, which is invisible on the measurement div and glaring on the overlay.
+      */}
+      <div className="relative">
         <div
-          ref={overlayRef}
+          ref={measurementRef}
           aria-hidden="true"
-          className="scrollbar-hide pointer-events-none absolute inset-x-2 top-0 max-h-full overflow-hidden whitespace-pre-wrap px-2 pt-1.5 text-sm leading-6 text-foreground [overflow-wrap:break-word]"
+          className="pointer-events-none invisible absolute inset-x-0 top-0 whitespace-pre-wrap px-2 text-sm leading-6 [overflow-wrap:break-word]"
         >
-          {highlight(currentValue)}
+          {`${currentValue}\u200b`}
         </div>
-      ) : null}
-      <textarea
+        {highlight ? (
+          <div
+            ref={overlayRef}
+            aria-hidden="true"
+            className="scrollbar-hide pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap px-2 pt-1.5 text-sm leading-6 text-foreground [overflow-wrap:break-word]"
+          >
+            {highlight(currentValue)}
+          </div>
+        ) : null}
+        <textarea
         ref={textareaRef}
         value={currentValue}
         onScroll={
@@ -218,9 +224,10 @@ export function PromptInput({
         onKeyDown={handleKeyDown}
         className={cn(
           "scrollbar-hide relative block w-full resize-none overflow-y-auto bg-transparent px-2 pt-1.5 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground/55",
-          highlight && "text-transparent caret-foreground selection:bg-foreground/25",
-        )}
-      />
+            highlight && "text-transparent caret-foreground selection:bg-foreground/25",
+          )}
+        />
+      </div>
 
       <div className="mt-1 flex min-h-8 items-center gap-1">
         {actions.length ? (
