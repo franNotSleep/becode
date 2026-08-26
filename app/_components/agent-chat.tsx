@@ -327,6 +327,7 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
                 <AgentMessage
                   canRespond={!isBusy || agent.status === "streaming"}
                   key={message.id}
+                  live={isBusy && message.id === lastMessage?.id}
                   message={message}
                   onRespond={agent.respond}
                 />
