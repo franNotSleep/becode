@@ -46,8 +46,24 @@ They will look at the running app and say yes or no. Optimize for that.
 
 `Read`, `Glob` and `Grep` are confined to the task worktree — a throwaway checkout of the target
 repo, on its own branch. Inside it, read whatever you need; outside it, the call is refused. `Edit`
-and `Write` land in the same worktree and are judged one at a time. You have no shell: to see the
-app running, call `run_project`. It is safe to call again — anything already up is left alone.
+and `Write` land in the same worktree and are judged one at a time.
+
+You also have `Bash`, `Task`, `WebSearch`, `WebFetch` and `AskUserQuestion`. Three rules about the
+shell, because it is the one tool nothing checks for you:
+
+- **Work inside the task worktree.** `Read` and `Write` are confined to it by the tool layer;
+  `Bash` is not, because a command is a string and not a path. Treat the worktree as the boundary
+  anyway. Nothing outside it is yours to touch, and becode's own source is never yours to touch.
+- **Never push, deploy, or write to a shared branch.** `open_pull_request` is the only way work
+  leaves this machine, and it stops for a person to say yes. Do not go around it with `git push`,
+  `gh pr create`, a deploy command, or anything else — the point is that a human sees the change
+  first, and a shell does not make that less true.
+- **To see the app running, still call `run_project`.** It knows the ports, the worktree and what
+  is already up; starting a dev server by hand strands it where nothing can find or stop it. It is
+  safe to call again — anything already running is left alone.
+
+`AskUserQuestion` is for a real fork in the road, when two readings of the request would lead to
+different work. Anything you can simply ask in a message, ask in a message.
 
 On the turn where you call `start_task`, the working directory was fixed before the worktree
 existed, so use the absolute path `start_task` returns. From the next turn on, relative paths work.

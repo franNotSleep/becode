@@ -4,8 +4,9 @@
  * One walk, used twice: live, as the SDK streams a turn, and again when a chat is reopened from
  * the session store. Two walks would drift, and the second one is the one nobody watches.
  */
-import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentEvent } from "./session.ts";
+import { getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { appendEvents, loadEvents } from "../lib/db.ts";
+import type { AgentEvent, TranscriptFile } from "./session.ts";
 
 /**
  * Harness plumbing, not work. `ToolSearch` loads deferred tool schemas; it never reaches
@@ -58,7 +59,13 @@ export function toolResultEvents(content: unknown, hidden: Set<string>): AgentEv
   return events;
 }
 
-/** How much attached base64 a reopened chat is allowed to carry back to the browser. */
+/**
+ * How much attached base64 a reopened chat is allowed to carry back to the browser.
+ *
+ * Legacy chats only. Everything becode records now keeps attachments in object storage and the
+ * transcript keeps a URL, so there is no budget to run out of — but a chat from before that has
+ * nothing except the base64 in the SDK's transcript, and this is the ceiling on carrying it.
+ */
 const REPLAY_ATTACHMENT_BUDGET = 6 * 1024 * 1024;
 
 /**
@@ -66,6 +73,10 @@ const REPLAY_ATTACHMENT_BUDGET = 6 * 1024 * 1024;
  *
  * The client reducer is reused verbatim, so a replayed tool row and a live one are the same
  * component fed the same shape.
+ *
+ * The fallback path: only chats recorded before becode kept its own `messages` table reach this,
+ * and their attachments exist nowhere but the base64 here. `app/api/sessions/[id]` prefers the
+ * table, where an image is a URL.
  */
 export function replayEvents(messages: SessionMessage[]): AgentEvent[] {
   const events: AgentEvent[] = [];
@@ -96,7 +107,7 @@ export function replayEvents(messages: SessionMessage[]): AgentEvent[] {
             .map((b) => String(b.text ?? ""))
             .join("\n");
 
-    const files: { name: string; mediaType: string; data: string }[] = [];
+    const files: TranscriptFile[] = [];
     for (const block of blocks) {
       const source = block.source as { type?: string; media_type?: string; data?: string } | undefined;
       if (source?.type !== "base64" || typeof source.data !== "string") continue;
@@ -104,10 +115,13 @@ export function replayEvents(messages: SessionMessage[]): AgentEvent[] {
       // screenshots still opens, it just stops showing thumbnails partway down.
       if (source.data.length > budget) continue;
       budget -= source.data.length;
+      const mediaType = String(source.media_type ?? "");
       files.push({
+        // An image block has no `title` — Anthropic's shape has nowhere to put one, so a legacy
+        // image cannot get its filename back. Chats recorded since keep the real name.
         name: String(block.title ?? (block.type === "image" ? "image" : "file")),
-        mediaType: String(source.media_type ?? ""),
-        data: source.data,
+        mediaType,
+        src: `data:${mediaType};base64,${source.data}`,
       });
     }
 
@@ -140,4 +154,20 @@ function flatten(content: unknown): string {
       .join("");
   }
   return "";
+}
+
+/**
+ * Give a chat that predates the `messages` table its history, once, before it says anything else.
+ *
+ * Without this, resuming an old chat would start its table at the current turn and everything
+ * before it would sit unreachable in the SDK's transcript — the read path prefers the table as
+ * soon as it holds a single row. Runs at most once per chat: the second call sees rows.
+ *
+ * Legacy attachments come across as `data:` URLs, budget and all. The bytes exist nowhere else,
+ * so this is as good as those images get; anything attached from here on goes to object storage.
+ */
+export async function backfillEvents(sessionId: string): Promise<void> {
+  if (loadEvents(sessionId).length > 0) return;
+  const messages = await getSessionMessages(sessionId).catch(() => null);
+  if (messages?.length) appendEvents(sessionId, replayEvents(messages));
 }

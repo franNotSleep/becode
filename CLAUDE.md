@@ -25,6 +25,12 @@ These are the point of the project. Do not relax them for convenience.
 
 - **No production writes, ever.** The agent's only output path to a target repo is a pull request
   against a non-default branch. No `git push` to `main`/`production`, no deploys, no force-push.
+  **This one is currently asked for, not enforced.** It used to be structural — with no `Bash`
+  there was no command to push with. The operator asked for the full harness, so `disallowedTools`
+  is empty and the shell is back; `agent/instructions.md` tells the agent not to push, and a prompt
+  is not a boundary. Gate 3 still stands in front of `open_pull_request`, which is the *intended*
+  path out; it is no longer the *only* one. `disallowedTools: ["Bash(git push:*)"]` is the one-line
+  way to make it structural again without giving up the shell.
 - **The role policy binds — where it is switched on.** One instance, one role, one plain-English
   policy in `roles/`. Enforce it at the tool layer (deny the call), never in the prompt — prompts
   are not a boundary. `judge` in `becode.config.ts` turns all three verdicts off for an instance
@@ -50,7 +56,10 @@ monorepo is the same architecture on Express — a useful reference, not a templ
 - Next.js 16 (preview) · React 19 · Tailwind 4 · shadcn/ui in `components/ui/`
 - `@anthropic-ai/claude-agent-sdk` — Claude Code as a library. It supplies the agent loop, context
   management, and host-native built-in tools; you supply the harness and host it yourself.
-- Node 24 (`.nvmrc`; `nvm use` before anything). No Docker, no sandbox, no container.
+- Node 24 (`.nvmrc`; `nvm use` before anything). No sandbox — the agent edits a real checkout with
+  host-native tools. One container, and only one: MinIO, for attachment bytes (`docker-compose.yml`,
+  published on **:9040/:9041** because :9000 is another project's bucket). becode runs without it;
+  attachments are the only thing that fails, and they fail with the command to fix it.
 - **Auth is your Claude subscription**, not an API key: `claude setup-token` mints a
   `CLAUDE_CODE_OAUTH_TOKEN` that covers both the agent and the judge.
 
@@ -72,6 +81,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | Per-chat state: the task, its worktree, its project | `agent/lib/task.ts` |
 | Content blocks → the events the browser renders | `agent/sdk/transcript.ts` |
 | Chat history and the sidebar | `app/api/sessions/`, `app/_components/chat-sidebar.tsx` |
+| Attachment bytes, and the URL they are served at | `agent/lib/blobs.ts`, `app/api/attachments/[key]/` |
 | What may be attached, and what it becomes | `agent/lib/attachments.ts` (`npm run check:attachments`) |
 | git worktree / diff helpers | `agent/lib/git.ts` |
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
@@ -111,7 +121,24 @@ the turn that calls `start_task` there is no worktree to write into anyway.
 `agent/lib/attachments.ts` is the trust boundary — an allowlist (png/jpeg/gif/webp,
 `application/pdf`, text and a code-extension set), 5 files, 5MB each, 15MB a turn. The browser's
 `accept` attribute is a convenience; this is the check. Anything else, video included, is a 400
-from `app/api/agent/route.ts` rather than an agent turn.
+from `app/api/agent/route.ts` rather than an agent turn. `toBlocks` stays pure and sync so
+`check:attachments` needs no network, and the upload happens *after* it returns — a refused file
+never reaches storage.
+
+**The bytes go to MinIO; the transcript keeps a URL.** They used to travel as base64 inside the
+replay body, and reopening a chat meant re-escaping every screenshot into one JSON string that the
+browser could not cache. Worse, `REPLAY_ATTACHMENT_BUDGET` was 6 MiB of base64 for a whole chat
+while one upload may be 5 MiB — ~6.99M chars — so **a single maximum-size image was already over
+the budget and was dropped**, silently, with `continue` rather than `break`, so a big image
+vanished while a smaller one later in the same turn still rendered in its original slot. Now
+`putBlob` (`agent/lib/blobs.ts`) stores it under the **sha256 of its content** and the event keeps
+`/api/attachments/<sha>`. A key names exactly one sequence of bytes, so the same screenshot
+attached twice is one object and the response is `immutable` — there is no invalidation to get
+wrong. The key is validated against `/^[0-9a-f]{64}$/` in the route: it arrives from a URL.
+
+A stored image also keeps its **real filename**. It could not before — `toBlocks` sets `title` on
+the PDF branch but Anthropic's `ImageBlockParam` has nowhere to put one, so replay fell back to the
+literal string `"image"` and that landed in `alt=`.
 
 Blocks only exist in `query`'s streaming-input form (`prompt: AsyncIterable<SDKUserMessage>`), so
 `session.ts` keeps the plain-string prompt when nothing is attached and switches forms only when
@@ -194,10 +221,11 @@ hands back what the chat owned, and `removeWorktree` runs on it — the function
 same chat is keyed under every session id it ever reported, so siblings are left pointing at a
 directory that is now gone; the stat in `chatFor` is what makes that harmless.
 
-**History is not becode's to store.** The Agent SDK keeps every session on disk — the same store
-`resume` reads — and exports `listSessions({dir})`, `getSessionMessages`, `renameSession`,
-`deleteSession` and `tagSession`. `listSessions` groups by project directory and follows git
-worktrees, which is exactly how tasks are laid out, so `GET /api/sessions` is a query, not a table.
+**The sidebar is the SDK's; the conversation is becode's.** The Agent SDK keeps every session on
+disk — the same store `resume` reads — and exports `listSessions({dir})`, `getSessionMessages`,
+`renameSession`, `deleteSession` and `tagSession`. `listSessions` groups by project directory and
+follows git worktrees, which is exactly how tasks are laid out, so the **list** at
+`GET /api/sessions` is a query, not a table, and titles, branches and the tag stay the SDK's.
 Two things make it work:
 
 - **`cwd` decides where a transcript is filed.** It used to fall back to `WORKTREE_ROOT`, so a
@@ -209,6 +237,24 @@ Two things make it work:
   not written the session file yet at init and the tag silently finds nothing. The tag is what
   separates becode's chats from your terminal sessions in the same repo — a chat that never starts
   a task sits on the project's own branch and is otherwise identical.
+
+**Reading a chat back is a different job from listing them, and it moved.** Replay used to walk
+the SDK's JSONL — double-digit megabytes in this repo's own project directory — and re-escape
+every attached image into one blocking JSON body. The `messages` table in `agent/lib/db.ts` is now
+the record: one `AgentEvent` per row, written through the single `emit` chokepoint in `session.ts`,
+so the browser and sqlite always see the same stream. Four things follow:
+
+- **The person's own turn is `keep`-ed, not emitted.** Live, the browser already rendered it — it
+  typed it. `user` events exist for replay, and this is where they come from now.
+- **Rows are written per event, not at end of turn**, so an aborted turn keeps what it produced.
+  They are buffered only until the init message reports a session id; there is no row before that.
+- **A new session id takes the history with it.** A fork or a compaction reports one, and
+  `moveEvents` carries the rows over — otherwise everything said before becomes unreachable from
+  the sidebar, which only knows the new id.
+- **Chats older than the table still open.** `GET /api/sessions/[id]` prefers the rows and falls
+  back to `getSessionMessages` + `replayEvents`. Resuming such a chat calls `backfillEvents` first:
+  without it the table would start at the current turn and the read path, which prefers a table
+  holding a single row, would call that the whole conversation.
 
 Reopening a chat replays it as the **same event stream** a live turn produces
 (`agent/sdk/transcript.ts` walks the blocks once, for both), folded by the same client reducer. A
@@ -293,16 +339,37 @@ since nothing comes after gate 3.
 
 **`judge: false` turns all three verdicts off.** `judgeRequest` and `judgeChange` return allowed
 without a call; `roles/<role>.md` stops binding, and this becode will implement a pricing or auth
-change if asked. Everything that is not the judge survives: `resolveInWorktree` still confines
-writes to the worktree, `Bash` is still absent, the read grant still refuses a real `.env`, and
-gate 3 still blocks on a person clicking approve — so nothing reaches a shared branch unattended.
-`session.ts` warns once per process so the state is not something you find in a diff, and
-`check:policy` calls `judgeAgainstPolicy` directly so the policy stays testable while unenforced.
+change if asked. What is left of the arrangement: `resolveInWorktree` still confines `Read`,
+`Edit` and `Write` to the worktree, the read grant still refuses a real `.env`, and gate 3 still
+blocks on a person clicking approve. `session.ts` warns once per process so the state is not
+something you find in a diff, and `check:policy` calls `judgeAgainstPolicy` directly so the policy
+stays testable while unenforced.
 
 The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
-checkout. `Bash` is removed outright with `disallowedTools`, which strips the tool definition from
-the request — the model never sees it. So is `Task`, so there are no subagents with their own
-permission surface to reason about.
+checkout.
+
+**`disallowedTools` is now empty, and that is a deployment choice like `judge: false`.** `Bash`,
+`Task`/`Agent`, `WebSearch`, `WebFetch` and `AskUserQuestion` were removed from the request
+outright — the model never saw them. The operator asked for the whole harness, so they are back,
+and `FULL_ACCESS` in `session.ts` allows them at the gate, because `canUseTool` defaults to deny
+and un-removing a tool alone would leave it refused.
+
+Be clear-eyed about what that costs, because it is the invariant at the top of this file:
+
+- **`Bash` is not confinable by `resolveInWorktree`.** That check takes a path; a command is a
+  string. Inside a shell the worktree boundary and "a pull request or nothing" are what
+  `agent/instructions.md` asks for, not what the tool layer enforces. A one-line scoped rule —
+  `disallowedTools: ["Bash(git push:*)"]` — buys the second one back without giving up the shell.
+- **`Task` does not open a second permission surface.** `canUseTool` receives `agentID` for
+  subagent calls, and a live turn confirms it: a subagent's `Bash` shows up as a gated tool row
+  like any other. The `Agent` call *itself* appears not to reach the callback, but everything it
+  goes on to do does.
+- **Gates 2 and 3 are untouched.** Every `Edit`/`Write` is still judged and still path-checked, and
+  `open_pull_request` still stops for a person.
+- **`AskUserQuestion` is enabled but inert.** It runs, and the CLI answers it itself with "The user
+  did not answer the questions" — becode is a web page, not an interactive terminal, and nothing
+  renders the option cards. Verified on a live turn. The agent degrades gracefully and carries on;
+  wiring it would mean routing the questions through `askPerson` the way gate 3 does.
 
 Every path, read or write, goes through `resolveInWorktree` in `canUseTool`. `cwd` alone is not a
 boundary: it is fixed when the query starts, so on the turn that calls `start_task` there is no
@@ -396,11 +463,13 @@ There are 5:
 
 `impeccable` comes from `npx impeccable install` (npm, `impeccable.style`), which writes to
 `~/.claude/skills/` — a path `settingSources: []` means the SDK never reads. Only `SKILL.md` and
-`reference/` are copied here; the 3MB `scripts/` is not, because `Bash` is removed from the agent's
-tool surface and every one of its detectors, screenshot passes and `npx impeccable` calls is a
-command the agent cannot run. `SKILL.md`'s Setup section is rewritten to say so — otherwise the
-first thing the skill does is spend a turn on a denied `node scripts/context.mjs`. That makes this
-copy a fork: re-run the installer for the global copy, then re-copy and re-apply the Setup edit.
+`reference/` are copied here; the 3MB `scripts/` is not. That was because `Bash` had been removed
+from the agent's tool surface, so every one of its detectors, screenshot passes and `npx
+impeccable` calls was a command the agent could not run — and `SKILL.md`'s Setup section is
+rewritten to say so, or the first thing the skill does is spend a turn on a denied `node
+scripts/context.mjs`. **The shell is back, so that reasoning has expired**: re-copying `scripts/`
+and reverting the Setup edit would now work. It has not been done — the fork still says there is no
+shell. Re-run the installer for the global copy, then re-copy, if you want the detectors.
 
 **A target repo's impeccable context is the design system, when it has one.** Impeccable keeps
 `PRODUCT.md` (what the product is and who for) and `DESIGN.md` (its tokens, and the reasoning) at a
@@ -420,12 +489,14 @@ The commands themselves live in `app/_components/impeccable-setup.tsx`, not besi
 reopened chat renders it with no second read path.
 
 becode does not run the installer. `/impeccable init` interviews the person and `/impeccable
-document` reads their code — becode's agent has neither `Bash` nor `AskUserQuestion`, so both are a
-Claude Code session in the target repo. becode's job is to notice it has not happened.
+document` reads their code. It has the shell for that now, but `AskUserQuestion` reaches nobody in
+a web page (see the note under How the constraint works), and an interview is the whole of `init` —
+so both are still a Claude Code session in the target repo. becode's job is to notice it has not
+happened.
 
 One caveat on `design-taste-frontend` here: parts of it assume a shell (`npx shadcn@latest add`)
-and image generation. becode has neither — `Bash` is removed from the tool surface entirely. It
-can still author component files by hand; it cannot run the installer.
+and image generation. The shell it now has; image generation it does not. So the installer works
+and the mock-up steps do not.
 
 `design-system-first` exists because the off-the-shelf skills actively conflict with the brief
 inside someone else's codebase — they say things like "replace the font with one that has
@@ -524,11 +595,13 @@ nvm use                      # Node 24 — .nvmrc; the SDK requires >=24
 claude setup-token           # mints a long-lived subscription token
 cp .env.example .env.local   # then paste it as CLAUDE_CODE_OAUTH_TOKEN
 npm install                  # first time only
+docker compose up -d         # MinIO, for attachment bytes — :9040, console on :9041
 npm run dev                  # http://localhost:4000
 ```
 
 `npm run dev` is the whole app: Next.js serves the UI, and `POST /api/agent` runs the agent in a
-Node route handler, streaming NDJSON back. There is no second process and no daemon.
+Node route handler, streaming NDJSON back. There is no second Node process and no daemon —
+`docker compose up -d` starts MinIO, which is not one.
 
 becode itself sits on **:4000**, not :3000, because :3000 belongs to a target app (tixvendor).
 Target apps keep their native ports: their env files and the backend's CORS allowlist are
@@ -538,8 +611,8 @@ Without a credential the UI loads and the first message comes back as a plain er
 fix — `hasAuth()` in `agent/sdk/session.ts` checks before anything else runs. `ANTHROPIC_API_KEY`
 works too if you would rather be billed per token.
 
-No Docker, no container, no keychain prompt. becode edits a local checkout with host-native tools;
-there is nothing to virtualize.
+No sandbox, no keychain prompt. becode edits a local checkout with host-native tools; there is
+nothing to virtualize. The one container holds attachment bytes, not code.
 
 ## Commands
 
@@ -548,7 +621,8 @@ npm run typecheck            # tsc --noEmit
 npm run check:policy         # the role policy against 10 known allow/refuse cases — run this first
 npm run check:boot           # port math, liveness, and the env-file copy — no servers started
 npm run check:attachments    # the attachment allowlist and its caps — video refused, no network
-npm run check:db             # the store: project round-trip, and a chat keeping its worktree
+npm run check:db             # the store: projects, a chat keeping its worktree, the conversation
+npm run check:blobs          # object storage: round trip, content-addressing, key validation
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
@@ -578,7 +652,16 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 - **Auto-approved tools never reach `canUseTool`.** This is the single most important fact here —
   see the warning under How the constraint works.
 - **`disallowedTools: ["Bash"]`** removes the tool definition entirely; a scoped rule like
-  `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode.
+  `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode. This list is
+  empty today — see the note under How the constraint works — so the second half, `FULL_ACCESS` in
+  `canUseTool`, is what actually lets those tools run.
+- **A tool's name in `disallowedTools` is not always the name `canUseTool` sees.** Subagents are
+  `Task` in the deny list and arrive as `Agent` in the callback. Verified on a live turn; both are
+  in `FULL_ACCESS`.
+- **`AskUserQuestion` is answered by the CLI, not by the host.** With no interactive renderer it
+  returns "The user did not answer the questions" and the turn continues. There is no `canUseTool`
+  verdict that supplies an answer — `onUserDialog`/`supportedDialogKinds` cover dialog kinds like
+  `refusal_fallback_prompt`, not this tool.
 - **`canUseTool` is async** and receives `toolUseID`, which is what makes an awaited human
   approval possible without inventing a protocol.
 - **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Not

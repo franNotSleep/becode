@@ -1,5 +1,5 @@
 import { deleteSession, getSessionMessages, renameSession } from "@anthropic-ai/claude-agent-sdk";
-import { findProject } from "@/agent/lib/db.ts";
+import { deleteEvents, findProject, loadEvents } from "@/agent/lib/db.ts";
 import { removeWorktree } from "@/agent/lib/git.ts";
 import { forgetChat } from "@/agent/lib/task.ts";
 import { replayEvents } from "@/agent/sdk/transcript.ts";
@@ -8,9 +8,19 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-/** One stored chat, as the same event stream the browser folds when it is live. */
+/**
+ * One stored chat, as the same event stream the browser folds when it is live.
+ *
+ * becode's own table first — an indexed query, with images as URLs rather than base64. A chat
+ * that predates it has no rows, and falls back to walking the SDK's transcript so the history
+ * already on this machine still opens.
+ */
 export async function GET(_request: Request, { params }: Context) {
   const { id } = await params;
+
+  const events = loadEvents(id);
+  if (events.length > 0) return Response.json({ events });
+
   const messages = await getSessionMessages(id).catch(() => null);
   if (!messages) return Response.json({ message: "No such chat." }, { status: 404 });
   return Response.json({ events: replayEvents(messages) });
@@ -40,6 +50,9 @@ export async function DELETE(_request: Request, { params }: Context) {
     }
   }
 
+  // The blobs are content-addressed and shared between chats, so they stay.
+  // ponytail: a sweeper over unreferenced keys is the upgrade path if the bucket ever matters.
+  deleteEvents(id);
   await deleteSession(id);
   return Response.json({ ok: true });
 }

@@ -20,7 +20,6 @@ import {
   MessageContent,
 } from "@/components/agents/message";
 import { ToolApproval } from "@/components/agents/tool-approval";
-import { dataUrl } from "./agent-chat";
 import { ImpeccableSetup, impeccableState } from "./impeccable-setup";
 import type { BecodeMessage, BecodePart } from "./use-becode-agent";
 
@@ -64,12 +63,13 @@ export function AgentMessage({
                 <span className="mb-2 flex flex-wrap gap-2">
                   {files.map((file, index) =>
                     file.mediaType.startsWith("image/") ? (
-                      // biome-ignore lint/performance/noImgElement: a data: URL has nothing to optimise.
+                      // biome-ignore lint/performance/noImgElement: next/image cannot optimise a
+                      // data: URL, and a stored attachment is already immutable-cached by its sha.
                       <img
                         alt={file.name}
                         className="max-h-40 rounded-lg border border-border/60 object-cover"
                         key={`${file.name}:${index}`}
-                        src={dataUrl(file)}
+                        src={file.src}
                       />
                     ) : (
                       <span

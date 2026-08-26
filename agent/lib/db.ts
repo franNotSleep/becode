@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projects as seed } from "../../becode.projects.ts";
+import type { AgentEvent } from "../sdk/session.ts";
 import type { Project } from "./projects.ts";
 import type { Chat } from "./task.ts";
 
@@ -35,7 +36,16 @@ CREATE TABLE IF NOT EXISTS chats (
   session_id TEXT PRIMARY KEY,
   state      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
-);`;
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  event      TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS messages_session ON messages (session_id, id);`;
 
 let handle: DatabaseSync | undefined;
 
@@ -121,4 +131,42 @@ export function saveChatState(sessionId: string, chat: Chat): void {
 
 export function deleteChatState(sessionId: string): void {
   db().prepare("DELETE FROM chats WHERE session_id = ?").run(sessionId);
+}
+
+/**
+ * The conversation itself.
+ *
+ * The Agent SDK already keeps a transcript on disk, and it stays the resume source — but reading a
+ * chat back out of it means parsing a JSONL that reaches double-digit megabytes and re-escaping
+ * every attached image into one JSON body. becode keeps its own record: one `AgentEvent` per row,
+ * the same events the browser folds live, so replay is an indexed query.
+ *
+ * ponytail: a row per event, including every `delta`. Coalescing consecutive deltas at write time
+ * is the upgrade path if a long chat ever loads slowly.
+ */
+export function appendEvents(sessionId: string, events: AgentEvent[]): void {
+  if (events.length === 0) return;
+  const statement = db().prepare(
+    "INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)",
+  );
+  const at = Date.now();
+  for (const event of events) statement.run(sessionId, JSON.stringify(event), at);
+}
+
+/** Every event of a chat, in the order it was produced. Empty for a chat that predates this table. */
+export function loadEvents(sessionId: string): AgentEvent[] {
+  return (
+    db()
+      .prepare("SELECT event FROM messages WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as { event: string }[]
+  ).map((row) => JSON.parse(row.event) as AgentEvent);
+}
+
+export function deleteEvents(sessionId: string): void {
+  db().prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
+}
+
+/** Carry a chat's events to a new session id. The SDK reports one on a fork or a compaction. */
+export function moveEvents(from: string, to: string): void {
+  db().prepare("UPDATE messages SET session_id = ? WHERE session_id = ?").run(to, from);
 }

@@ -6,7 +6,8 @@ import type { AgentEvent } from "@/agent/sdk/session.ts";
 
 export type BecodePart =
   | { type: "text"; text: string }
-  | { type: "file"; name: string; mediaType: string; data: string }
+  /** `src` is `/api/attachments/<sha>` once stored, and a `data:` URL for the turn being typed. */
+  | { type: "file"; name: string; mediaType: string; src: string }
   | { type: "reasoning"; text: string }
   | {
       type: "tool";
@@ -71,9 +72,17 @@ export function useBecodeAgent() {
         {
           id: nextId(),
           role: "user",
-          // ponytail: the base64 is kept as-is and rendered as a data: URL — nothing to revoke,
-          // and the server's 15MB-per-turn cap already bounds what a transcript can hold.
-          parts: [...attachments.map((a) => ({ type: "file" as const, ...a })), { type: "text" as const, text }],
+          // The bytes are already in memory for the turn being sent, so this bubble renders them
+          // directly. Every later read of the same chat gets `/api/attachments/<sha>` instead.
+          parts: [
+            ...attachments.map((a) => ({
+              type: "file" as const,
+              name: a.name,
+              mediaType: a.mediaType,
+              src: `data:${a.mediaType || "application/octet-stream"};base64,${a.data}`,
+            })),
+            { type: "text" as const, text },
+          ],
         },
         { id: nextId(), role: "assistant", parts: [] },
       ]);

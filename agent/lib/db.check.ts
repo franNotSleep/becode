@@ -1,6 +1,7 @@
 /**
  * The store: seeding projects from the file, round-tripping a recipe, refusing a duplicate id,
- * and keeping a chat's worktree across the restart that used to lose it.
+ * keeping a chat's worktree across the restart that used to lose it, and holding the conversation
+ * itself — the record a reopened chat is now replayed from.
  *
  * node --experimental-strip-types agent/lib/db.check.ts
  */
@@ -12,7 +13,8 @@ import path from "node:path";
 const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "becode-db-")), "becode.db");
 process.env.BECODE_DB = file;
 
-const { addProject, allProjects, findProject, loadChatState, saveProject } = await import("./db.ts");
+const { addProject, allProjects, appendEvents, deleteEvents, findProject, loadChatState, loadEvents, moveEvents, saveProject } =
+  await import("./db.ts");
 const { chatFor, forgetChat, rememberChat, setTask } = await import("./task.ts");
 const { projects: seed } = await import("../../becode.projects.ts");
 
@@ -78,6 +80,33 @@ setTask(chat, { projectId: "scraper", request: "again", worktree, branch: "becod
 assert.equal(forgetChat("session-1")?.branch, "becode/again");
 assert.equal(loadChatState("session-1"), undefined, "the row goes, not just the cache entry");
 assert.notEqual(loadChatState("session-2"), undefined, "a sibling id is not collateral");
+
+// The conversation. Events go in as they stream and come back in the order they were produced —
+// an image is a URL here, never base64, which is the whole reason this table exists.
+appendEvents("chat-a", [
+  { type: "user", text: "make it roomier", files: [{ name: "hero.png", mediaType: "image/png", src: "/api/attachments/abc" }] },
+  { type: "delta", text: "Looking" },
+]);
+appendEvents("chat-a", [{ type: "delta", text: " at it." }]);
+appendEvents("chat-b", [{ type: "delta", text: "elsewhere" }]);
+
+const replay = loadEvents("chat-a");
+assert.equal(replay.length, 3, "every event is a row, in one chat");
+assert.deepEqual(replay.map((e) => e.type), ["user", "delta", "delta"], "in the order produced");
+assert.equal(replay[0].type === "user" && replay[0].files[0].src, "/api/attachments/abc");
+assert.equal(replay[0].type === "user" && replay[0].files[0].name, "hero.png", "the filename survives");
+assert.deepEqual(loadEvents("chat-c"), [], "a chat with no rows replays through the SDK instead");
+
+// A fork or a compaction reports a new session id. The history follows it, or the sidebar can
+// never reach anything said before.
+moveEvents("chat-a", "chat-a2");
+assert.equal(loadEvents("chat-a2").length, 3);
+assert.deepEqual(loadEvents("chat-a"), []);
+assert.equal(loadEvents("chat-b").length, 1, "another chat is not swept along");
+
+deleteEvents("chat-a2");
+assert.deepEqual(loadEvents("chat-a2"), []);
+assert.equal(loadEvents("chat-b").length, 1, "deleting one chat is not collateral for the next");
 
 fs.rmSync(path.dirname(file), { recursive: true, force: true });
 console.log("db: ok");

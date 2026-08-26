@@ -1,0 +1,34 @@
+# Object storage for chat attachments.
+#
+# becode edits a local checkout with host-native tools and needs no container to do it — this is
+# the one exception. Image bytes are served to the browser by URL (`/api/attachments/<sha>`)
+# rather than inlined as base64 in the replay JSON, and they have to live somewhere durable.
+#
+#   docker compose up -d      # :9040 API, :9041 console
+#
+# Not :9000. That is MinIO's default and it is already taken on this machine — becode moves for
+# the same reason it sits on :4000 rather than :3000: the servers that were here first have env
+# files and allowlists written for their ports, and becode is a one-line change.
+#
+# Without it becode still runs; attachments are the only thing that fails, and they fail loudly.
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: becode-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9040:9000"
+      - "9041:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-becode}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-becode-dev-secret}
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  minio:

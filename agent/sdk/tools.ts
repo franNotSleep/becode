@@ -473,7 +473,13 @@ export function childEnv(
     delete inherited[key];
   }
   for (const key of Object.keys(inherited)) {
-    if (key.startsWith("BECODE_") || key.startsWith("NEXT_") || key.startsWith("__NEXT_")) {
+    if (
+      key.startsWith("BECODE_") ||
+      key.startsWith("NEXT_") ||
+      key.startsWith("__NEXT_") ||
+      // MINIO_SECRET_KEY is a credential, and a target repo's dev server has no use for any of it.
+      key.startsWith("MINIO_")
+    ) {
       delete inherited[key];
     }
   }

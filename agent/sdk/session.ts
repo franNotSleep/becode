@@ -11,7 +11,7 @@ import { config } from "../../becode.config.ts";
 import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { findProject } from "../lib/db.ts";
+import { appendEvents, findProject, moveEvents } from "../lib/db.ts";
 import { projectPorts } from "../lib/projects.ts";
 import { holders, release } from "../lib/ports.ts";
 import { canRead } from "../lib/reads.ts";
@@ -28,13 +28,54 @@ const BECODE_ROOT = process.cwd();
 /** Read-only tools. Not judged, but still confined to the worktree. */
 const READ_TOOLS = new Set(["Read", "Glob", "Grep"]);
 
+/**
+ * The full harness, switched on deliberately.
+ *
+ * These were `disallowedTools` — stripped from the request so the model never saw them — and the
+ * operator asked for them back. Each is allowed outright rather than judged: there is no path for
+ * a path check to confine a shell command to, and half the point of `Task` is that a subagent goes
+ * and does the thing.
+ *
+ * What survives: gate 2 still judges every `Edit`/`Write`, gate 3 still blocks
+ * `open_pull_request` on a person, and `canUseTool` still sees subagent calls (`agentID` in its
+ * options), so a `Task` child is gated exactly like its parent. What does not: `Bash` takes a
+ * command string, not a path, so `resolveInWorktree` cannot reach it. Inside a shell the worktree
+ * confinement and "a pull request or nothing" are what the prompt asks for, not what the tool
+ * layer enforces.
+ */
+const FULL_ACCESS = new Set([
+  "Bash",
+  "BashOutput",
+  "KillShell",
+  // Both names: `disallowedTools` knows this one as `Task`, but it reaches the model — and this
+  // callback — as `Agent`. Verified against a live turn; the SDK's own `.d.ts` uses both.
+  "Task",
+  "Agent",
+  "TaskOutput",
+  "TaskStop",
+  "SendMessage",
+  "WebSearch",
+  "WebFetch",
+  "AskUserQuestion",
+  "SlashCommand",
+  "ToolSearch",
+]);
+
 /** Built-in tools that write to disk. Each one is judged before it lands. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
+
+/**
+ * An attachment as the transcript keeps it: something the browser can fetch, never the bytes.
+ *
+ * `src` is `/api/attachments/<sha>` for anything becode stored, and a `data:` URL only on the
+ * legacy replay path, where the base64 is all a pre-MinIO chat left behind.
+ */
+export type TranscriptFile = { name: string; mediaType: string; src: string };
 
 export type AgentEvent =
   | { type: "session"; sessionId: string }
   /** Replay only: the person's own turn. Live, the browser already has it — it typed it. */
-  | { type: "user"; text: string; files: { name: string; mediaType: string; data: string }[] }
+  | { type: "user"; text: string; files: TranscriptFile[] }
   | { type: "delta"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool"; id: string; name: string; title: string; input: unknown }
@@ -135,6 +176,7 @@ function describeEdit(input: Record<string, unknown>, worktree: string): string 
 export function run({
   message,
   attachments,
+  files,
   sessionId,
   projectId,
   discoveryPath,
@@ -142,6 +184,8 @@ export function run({
 }: {
   message: string;
   attachments: ContentBlockParam[];
+  /** The same attachments already in object storage, as the transcript will remember them. */
+  files: TranscriptFile[];
   sessionId?: string;
   /** Set when the chat was opened on a project in the sidebar, before anything was typed. */
   projectId?: string;
@@ -150,7 +194,24 @@ export function run({
   signal: AbortSignal;
 }): AsyncIterable<AgentEvent> {
   const out = channel<AgentEvent>();
-  const emit = out.push;
+
+  /**
+   * Every event goes to the browser and to sqlite, which is the whole point of one chokepoint.
+   *
+   * Buffered until a session id is known — a brand new chat has no row to write against until the
+   * init message reports one, and tool calls always come after init. Written per event rather than
+   * once at the end so an aborted turn keeps what it already produced.
+   */
+  let storeId: string | undefined = sessionId;
+  const pending: AgentEvent[] = [];
+  const keep = (event: AgentEvent) => {
+    pending.push(event);
+    if (storeId) appendEvents(storeId, pending.splice(0));
+  };
+  const emit = (event: AgentEvent) => {
+    out.push(event);
+    keep(event);
+  };
 
   // This chat's state. A resumed chat finds the worktree it already has; a new one starts empty.
   const chat: Chat = chatFor(sessionId);
@@ -159,6 +220,10 @@ export function run({
 
   // Gate 1 reads these from here: the ask may live in the screenshot rather than the typed text.
   turnAttachments.set(attachments);
+
+  // Kept, not emitted: live, the browser already rendered this — it typed it. `user` events exist
+  // for replay, and replay is now this table rather than a walk of the SDK's transcript.
+  keep({ type: "user", text: message, files });
 
   if (!hasAuth()) {
     emit({ type: "error", message: AUTH_HINT });
@@ -296,6 +361,12 @@ export function run({
       return { behavior: "allow", updatedInput: input };
     }
 
+    // Taking a tool out of `disallowedTools` is only half of it: everything here defaults to deny,
+    // so a tool the model can finally see would still be refused at the gate.
+    if (FULL_ACCESS.has(toolName)) {
+      return { behavior: "allow", updatedInput: input };
+    }
+
     return { behavior: "deny", message: `${toolName} is not available to becode.` };
   };
 
@@ -324,8 +395,11 @@ export function run({
           // cwd is the target worktree, so this must be absolute: becode's own skills live here,
           // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.
           plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
-          // No allowedTools, no permissionMode — see the note above.
-          disallowedTools: ["Bash", "WebSearch", "WebFetch", "Task", "AskUserQuestion"],
+          // No allowedTools, no permissionMode — see the note above. Empty by choice: the operator
+          // wants the whole harness. Narrowing it again is one entry here — a scoped rule like
+          // `Bash(git push:*)` blocks only what it names — and `FULL_ACCESS` above is the matching
+          // half, since a tool has to pass both to run.
+          disallowedTools: [],
           // Load no settings files. A `permissions.allow` rule in the *target repo's*
           // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
           // and the target repo is not becode's trust boundary.
@@ -349,6 +423,10 @@ export function run({
             lastSessionId = id;
             rememberChat(chat, id);
             untagged = id;
+            // A chat that gets a new id (a fork, a compaction) keeps its history: the rows move
+            // with it, or everything before this point becomes unreachable from the sidebar.
+            if (storeId && storeId !== id) moveEvents(storeId, id);
+            storeId = id;
             emit({ type: "session", sessionId: id });
           }
           continue;
