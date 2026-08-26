@@ -25,8 +25,12 @@ These are the point of the project. Do not relax them for convenience.
 
 - **No production writes, ever.** The agent's only output path to a target repo is a pull request
   against a non-default branch. No `git push` to `main`/`production`, no deploys, no force-push.
-- **The role policy binds.** One instance, one role, one plain-English policy in `roles/`. Enforce
-  it at the tool layer (deny the call), never in the prompt — prompts are not a boundary.
+- **The role policy binds — where it is switched on.** One instance, one role, one plain-English
+  policy in `roles/`. Enforce it at the tool layer (deny the call), never in the prompt — prompts
+  are not a boundary. `judge` in `becode.config.ts` turns all three verdicts off for an instance
+  whose operator does not want them; **this instance currently runs with `judge: false`.** That is
+  a deployment choice, not licence to weaken the mechanism: new policy logic still belongs in the
+  tool layer, and `check:policy` still has to pass.
 - **Design system is input, not invention.** Before changing UI, the agent reads the target repo's
   design system (tokens, theme config, component library) and works from it. New one-off colors,
   spacings, or components are a bug.
@@ -278,6 +282,22 @@ about the policy is structured — no globs, no path lists — and the agent doi
 gets to interpret it. A separate small model (`haiku`, set in `becode.config.ts`) rules on each
 case against the policy text, defaulting to refusal when unsure — including when its own reply is
 unparseable (`parseVerdict` in `agent/sdk/judge.ts`).
+
+**A request is judged for what it asks, a change for what it does.** Gate 1 used to be given the
+strict rules written for a diff, and refused a *critique* on the grounds that one might surface
+behavioural fixes — a guess about work nobody had done. `REQUEST_RULES` in `judge.ts` now says to
+rule on the ask: reading, reviewing and planning change nothing and are allowed, ambiguity resolves
+to the in-bounds reading, and "this could lead somewhere the policy forbids" is not a reason,
+because gate 2 refuses that write when it is attempted. `CHANGE_RULES` keeps refuse-when-unsure,
+since nothing comes after gate 3.
+
+**`judge: false` turns all three verdicts off.** `judgeRequest` and `judgeChange` return allowed
+without a call; `roles/<role>.md` stops binding, and this becode will implement a pricing or auth
+change if asked. Everything that is not the judge survives: `resolveInWorktree` still confines
+writes to the worktree, `Bash` is still absent, the read grant still refuses a real `.env`, and
+gate 3 still blocks on a person clicking approve — so nothing reaches a shared branch unattended.
+`session.ts` warns once per process so the state is not something you find in a diff, and
+`check:policy` calls `judgeAgainstPolicy` directly so the policy stays testable while unenforced.
 
 The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
 checkout. `Bash` is removed outright with `disallowedTools`, which strips the tool definition from
@@ -542,6 +562,8 @@ claude setup-token           # re-mint the subscription token when it expires
 
 `check:policy` is the cheapest end-to-end signal in the repo: it exercises the token, the judge,
 and the role policy in one command without touching the UI. Run it before debugging anything else.
+It ignores `config.judge` — a policy you cannot test is not one you can switch back on with any
+confidence — so a green run says nothing about whether this instance is enforcing it.
 
 `next dev` rewrites `AGENTS.md` and `next-env.d.ts` on every run; commit the churn rather than
 fighting it. Next.js 16 is a preview with breaking changes — its own generated note points at

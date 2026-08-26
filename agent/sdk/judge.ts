@@ -69,7 +69,10 @@ const CHANGE_RULES = `You are judging work that has already been done. Nothing a
  * reading "make everything free" is judged as "do this". A change does not: gates 2 and 3 rule on
  * the diff, which says what it does on its own.
  */
-async function rule(kind: "request" | "change", detail: string): Promise<Verdict> {
+export async function judgeAgainstPolicy(
+  kind: "request" | "change",
+  detail: string,
+): Promise<Verdict> {
   const role = rolePolicy();
   const subject =
     kind === "request"
@@ -137,8 +140,22 @@ export function parseVerdict(text: string): Verdict {
   };
 }
 
+/**
+ * The verdict returned when `becode.config.ts` has the judge switched off.
+ *
+ * Allowed, and honest about why: a caller that renders `reason` should not claim the policy
+ * approved something it never read. `judgeAgainstPolicy` above is unaffected — `check:policy`
+ * calls it directly, so the role policy stays testable while it is not being enforced.
+ */
+const NOT_ENFORCED: Verdict = {
+  allowed: true,
+  reason: "The role policy is not enforced on this becode, so nothing was checked.",
+};
+
 /** Judge what the person asked for, before any work starts. */
-export const judgeRequest = (request: string) => rule("request", request);
+export const judgeRequest = (request: string): Promise<Verdict> =>
+  config.judge ? judgeAgainstPolicy("request", request) : Promise.resolve(NOT_ENFORCED);
 
 /** Judge what actually changed, before it can leave this machine. */
-export const judgeChange = (summary: string) => rule("change", summary);
+export const judgeChange = (summary: string): Promise<Verdict> =>
+  config.judge ? judgeAgainstPolicy("change", summary) : Promise.resolve(NOT_ENFORCED);

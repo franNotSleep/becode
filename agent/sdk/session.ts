@@ -7,6 +7,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
+import { config } from "../../becode.config.ts";
 import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
@@ -49,6 +50,20 @@ export function hasAuth(): boolean {
 
 export const AUTH_HINT =
   "No CLAUDE_CODE_OAUTH_TOKEN set — run `claude setup-token` and add it to .env.local";
+
+/**
+ * Say it out loud, once per process.
+ *
+ * A becode with the judge off looks identical to one with it on: the same chat, the same approval
+ * card before a pull request. The difference is that nothing is deciding whether a request was
+ * this role's to make. That is not a state to discover from a diff.
+ */
+if (!config.judge) {
+  console.warn(
+    `becode: the role policy (roles/${config.role}.md) is NOT enforced — ` +
+      "`judge: false` in becode.config.ts. Requests and changes are not checked against it.",
+  );
+}
 
 /**
  * Pull requests waiting on a person.

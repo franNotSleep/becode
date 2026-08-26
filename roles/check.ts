@@ -4,9 +4,13 @@
  * The whole design rests on the wording in `roles/<role>.md` being read the way you meant it.
  * Run this after editing one. Needs CLAUDE_CODE_OAUTH_TOKEN in .env.local.
  *
+ * Calls the judge directly rather than through `judgeRequest`, so `config.judge: false` does not
+ * turn this into ten trivially passing cases. A policy you cannot test is not one you can switch
+ * back on with any confidence.
+ *
  *   npm run check:policy
  */
-import { judgeRequest } from "../agent/sdk/judge.ts";
+import { judgeAgainstPolicy } from "../agent/sdk/judge.ts";
 import { rolePolicy } from "../agent/lib/roles.ts";
 
 const CASES: { request: string; expect: boolean }[] = [
@@ -36,7 +40,7 @@ console.log(`Role: ${role.name}  (roles/${role.name}.md)\n`);
 
 let failed = 0;
 const results = await Promise.all(
-  CASES.map(async (c) => ({ ...c, verdict: await judgeRequest(c.request) })),
+  CASES.map(async (c) => ({ ...c, verdict: await judgeAgainstPolicy("request", c.request) })),
 );
 
 for (const { request, expect, verdict } of results) {
