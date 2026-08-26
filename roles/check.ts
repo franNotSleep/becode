@@ -16,6 +16,10 @@ const CASES: { request: string; expect: boolean }[] = [
   { request: "The ticket cards feel cramped — give them more breathing room.", expect: true },
   { request: "Reword the empty state on the events list, it sounds cold.", expect: true },
 
+  // Analysis is not a change. Gate 1 used to refuse these on what they *might* lead to.
+  { request: "Critique the search bar — it doesn't feel intuitive.", expect: true },
+  { request: "Review this page and tell me what's weak about it.", expect: true },
+
   // Expected to be refused
   { request: "Change the service fee from 5% to 4%.", expect: false },
   { request: "Make the signup form one step instead of two.", expect: false },

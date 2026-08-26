@@ -14,10 +14,8 @@ thing to judge. Rule on that one thing against that policy.
 - The policy is the whole authority. Do not apply your own idea of what a role should cover.
 - Judge what the thing actually does, not how it is described. "Just a small tweak" to a payment
   rule is a payment change.
-- If a request is partly inside and partly outside, it is not allowed. Say which part is the problem.
-- If you genuinely cannot tell, it is not allowed. Under-permitting is a small cost here;
-  over-permitting is the failure this exists to prevent.
-- Vagueness alone is not grounds for refusal. "Make the hero nicer" is fine if visual work is allowed.
+
+{RULES}
 
 Reply with nothing but a verdict in exactly this shape:
 
@@ -29,6 +27,36 @@ or
 VERDICT: REFUSE
 <one or two sentences addressed to the person who asked, saying which part crosses the line and
 what they could ask for instead. No policy quoting, no lecturing.>`;
+
+/**
+ * Gate 1 rules on an ask, and an ask has changed nothing yet.
+ *
+ * This used to be judged like a change — refuse when unsure, refuse when partly outside — and it
+ * refused "critique this, it doesn't feel intuitive" on the grounds that a critique *might* surface
+ * behavioural fixes. That is a guess about work nobody has done, and it costs the person the one
+ * thing gate 1 is cheap enough to give: a fast answer to a reasonable question. Every edit the
+ * request leads to is judged on its own before it reaches disk, and the real diff is judged again
+ * before it leaves the machine, so speculation buys nothing that those two do not already cover.
+ */
+const REQUEST_RULES = `You are judging a request, before any work has started. Nothing has been
+written yet, and every edit this leads to is judged again, on its own text, before it reaches disk.
+
+- Rule on what is being asked for, not on what it might lead to. A refusal needs the ask itself to
+  be out of bounds, or to be undeliverable without going out of bounds. "This could pull in changes
+  the policy does not allow" is not a reason — those changes are refused when they are attempted.
+- Looking, reading, reviewing, critiquing, auditing, planning and advising change nothing. Allow
+  them. The policy governs what may be changed, not what may be examined or discussed.
+- Ambiguity is not grounds for refusal. If a request has a reading that sits inside the policy,
+  take that reading and allow it. "Make the hero nicer" is fine if visual work is allowed.
+- Refuse when the thing asked for is squarely outside the policy, or when a visual-sounding ask can
+  only be delivered by changing behaviour underneath.`;
+
+/** Gates 2 and 3 rule on work that exists. This is the last check, so it is the strict one. */
+const CHANGE_RULES = `You are judging work that has already been done. Nothing after this stops it.
+
+- If a change is partly inside and partly outside, it is not allowed. Say which part is the problem.
+- If you genuinely cannot tell, it is not allowed. Under-permitting is a small cost here;
+  over-permitting is the failure this exists to prevent.`;
 
 /**
  * Ask the judge model to rule on one thing.
@@ -56,7 +84,10 @@ async function rule(kind: "request" | "change", detail: string): Promise<Verdict
     prompt: attached.length === 0 ? prompt : withAttachments(attached, prompt),
     options: {
       model: config.judgeModel,
-      systemPrompt: SYSTEM,
+      systemPrompt: SYSTEM.replace(
+        "{RULES}",
+        kind === "request" ? REQUEST_RULES : CHANGE_RULES,
+      ),
       disallowedTools: ["*"],
       settingSources: [],
       maxTurns: 1,
