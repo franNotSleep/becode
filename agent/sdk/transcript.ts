@@ -137,6 +137,12 @@ export function summarize(name: string, input: unknown): string {
   const tool = name.replace(/^mcp__becode__/, "");
   if (input === null || typeof input !== "object") return tool;
   const record = input as Record<string, unknown>;
+  // A command is not a path — the last two segments of `cd apps/web && pnpm build` are a lie.
+  // Without this every Bash row read `Bash` and a run of a dozen of them said nothing at all.
+  if (typeof record.command === "string" && record.command.trim()) {
+    const line = record.command.trim().split("\n")[0];
+    return `${tool} ${line.length > 90 ? `${line.slice(0, 90)}…` : line}`;
+  }
   for (const key of ["file_path", "pattern", "path", "projectId", "title", "request"]) {
     const value = record[key];
     if (typeof value === "string" && value.length > 0) {

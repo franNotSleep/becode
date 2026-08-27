@@ -4,14 +4,15 @@ import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { CircleAlertIcon, FileTextIcon } from "lucide-react";
+import {
+  CircleAlertIcon,
+  FileTextIcon,
+  PencilLineIcon,
+  SquareTerminalIcon,
+} from "lucide-react";
 import { memo, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
-import {
-  AgentActivity,
-  type AgentActivityItem,
-  type AgentTraceKind,
-} from "@/components/agents/agent-activity";
+import { AgentActivity, type AgentActivityItem } from "@/components/agents/agent-activity";
 import { type CitationItem, Citations } from "@/components/agents/citations";
 import {
   Message,
@@ -187,28 +188,33 @@ function group(parts: BecodePart[]): Block[] {
 }
 
 /** Built-in tools by what they do to the worktree; becode's own tools all read as actions. */
-const TOOL_KIND: Record<string, AgentTraceKind> = {
-  Edit: "write",
-  Glob: "read",
-  Grep: "read",
-  Read: "read",
-  Write: "write",
+const TOOL_ICON: Record<string, ReactNode> = {
+  Edit: <PencilLineIcon className="size-4" />,
+  Glob: <FileTextIcon className="size-4" />,
+  Grep: <FileTextIcon className="size-4" />,
+  Read: <FileTextIcon className="size-4" />,
+  Write: <PencilLineIcon className="size-4" />,
 };
+const RAN_ICON = <SquareTerminalIcon className="size-4" />;
 
 function Activity({ live, parts }: { readonly live: boolean; readonly parts: BecodePart[] }) {
   const items: AgentActivityItem[] = parts.map((part, index) =>
     part.type === "tool"
       ? {
+          // A `tool` row rather than a `trace` row: same information, and the action reads as an
+          // action. No `additions`/`deletions` — an Edit's input is a before/after string, not a
+          // diff, so any count derived from it would be a guess printed as a fact.
+          action: labelOf(part.name),
           body: <ToolDetail part={part} />,
-          detail: detailOf(part.name, part.title),
           icon:
             part.state === "error" ? (
               <CircleAlertIcon className="size-4 text-rose-500" />
-            ) : undefined,
+            ) : (
+              (TOOL_ICON[part.name] ?? RAN_ICON)
+            ),
           id: part.id,
-          kind: TOOL_KIND[part.name] ?? "run",
-          label: labelOf(part.name),
-          type: "trace",
+          target: detailOf(part.name, part.title),
+          type: "tool",
         }
       : {
           content: part.type === "text" || part.type === "reasoning" ? part.text : "",
