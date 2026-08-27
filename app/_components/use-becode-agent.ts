@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { Attachment } from "@/agent/lib/attachments.ts";
-import type { AgentEvent } from "@/agent/sdk/session.ts";
+import type { AgentEvent, AskQuestion } from "@/agent/sdk/session.ts";
 
 export type BecodePart =
   | { type: "text"; text: string }
@@ -26,6 +26,14 @@ export type BecodePart =
       parameters: unknown;
       reason: string;
       status: "pending" | "approved" | "denied";
+    }
+  | {
+      type: "question";
+      id: string;
+      questions: AskQuestion[];
+      status: "pending" | "answered";
+      /** Question text → answer, once given. Empty when the person let it lapse. */
+      answers?: Record<string, string>;
     };
 
 export type BecodeMessage = {
@@ -194,6 +202,23 @@ export function useBecodeAgent() {
     }).catch(() => undefined);
   }, []);
 
+  /**
+   * Answer the agent's questions. The turn is parked on `onUserDialog` until this lands.
+   *
+   * Keyed by the question's own text, because that is what the CLI folds back into the tool's
+   * input. `null` is a real answer — it declines, and the CLI applies its own default.
+   */
+  const answer = useCallback(async (id: string, answers: Record<string, string> | null) => {
+    setMessages((previous) =>
+      reduce(previous, { type: "question-answered", id, answers: answers ?? {} }),
+    );
+    await fetch("/api/agent/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, answers }),
+    }).catch(() => undefined);
+  }, []);
+
   return {
     messages,
     status,
@@ -203,6 +228,7 @@ export function useBecodeAgent() {
     send,
     cancel,
     respond,
+    answer,
     startNew,
     open,
     addProject,
@@ -280,6 +306,19 @@ function reduce(messages: BecodeMessage[], event: AgentEvent): BecodeMessage[] {
         last.parts.map((part) =>
           part.type === "approval" && part.id === event.id
             ? { ...part, status: event.approved ? "approved" : "denied" }
+            : part,
+        ),
+      );
+    case "question":
+      return put([
+        ...last.parts,
+        { type: "question", id: event.id, questions: event.questions, status: "pending" },
+      ]);
+    case "question-answered":
+      return put(
+        last.parts.map((part) =>
+          part.type === "question" && part.id === event.id
+            ? { ...part, status: "answered", answers: event.answers }
             : part,
         ),
       );

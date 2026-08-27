@@ -64,6 +64,7 @@ const FULL_ACCESS = new Set([
 /** Built-in tools that write to disk. Each one is judged before it lands. */
 const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
 
+
 /**
  * An attachment as the transcript keeps it: something the browser can fetch, never the bytes.
  *
@@ -71,6 +72,19 @@ const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
  * legacy replay path, where the base64 is all a pre-MinIO chat left behind.
  */
 export type TranscriptFile = { name: string; mediaType: string; src: string };
+
+/**
+ * One question the agent wants answered, as `AskUserQuestion` states it.
+ *
+ * Trimmed from the tool's own input: the model may send 1-4 questions of 2-4 options each, and
+ * `header` is the short chip it labels them with.
+ */
+export type AskQuestion = {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+};
 
 export type AgentEvent =
   | { type: "session"; sessionId: string }
@@ -82,6 +96,10 @@ export type AgentEvent =
   | { type: "tool-result"; id: string; ok: boolean; text: string }
   | { type: "approval"; id: string; tool: string; title: string; parameters: unknown; reason: string }
   | { type: "approval-resolved"; id: string; approved: boolean }
+  /** The agent asked something. Answering is what unblocks the turn. */
+  | { type: "question"; id: string; questions: AskQuestion[] }
+  /** Question text → the person's answer. Empty when they let it lapse. */
+  | { type: "question-answered"; id: string; answers: Record<string, string> }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -119,6 +137,24 @@ export function resolveApproval(id: string, approved: boolean): boolean {
   if (!resolve) return false;
   pendingApprovals.delete(id);
   resolve(approved);
+  return true;
+}
+
+/**
+ * Questions waiting on a person — the same trick as `pendingApprovals`, a different answer.
+ *
+ * `AskUserQuestion` is not run by becode: the CLI executes it and asks its host to render the
+ * questions, through a `request_user_dialog` control request. Until becode declared it could
+ * render them the CLI failed closed, answered its own dialog, and the agent was told "The user
+ * did not answer the questions" without anyone ever being asked.
+ */
+const pendingQuestions = new Map<string, (answers: Record<string, string> | null) => void>();
+
+export function resolveQuestion(id: string, answers: Record<string, string> | null): boolean {
+  const resolve = pendingQuestions.get(id);
+  if (!resolve) return false;
+  pendingQuestions.delete(id);
+  resolve(answers);
   return true;
 }
 
@@ -324,6 +360,29 @@ export function run({
       return { behavior: "allow", updatedInput: input };
     }
 
+    /**
+     * The agent's own questions, answered by the person rather than by the CLI.
+     *
+     * becode does not run this tool — the CLI does, and it reads the answers back out of its own
+     * input. With a terminal it renders the questions itself, through the permission prompt; the
+     * SDK's equivalent of that prompt is this callback, so this is the only place a host can get
+     * in front of them. Allowing the call *without* answers is exactly what produced "The user did
+     * not answer the questions" for every question becode had ever asked.
+     *
+     * `updatedInput` with an `answers` map keyed by question text is the shape the CLI's own
+     * renderer sends. Values are the option's label verbatim, or free text; multi-select answers
+     * are comma-separated.
+     */
+    if (toolName === "AskUserQuestion") {
+      const questions = (Array.isArray(input.questions) ? input.questions : []) as AskQuestion[];
+      if (questions.length === 0) return { behavior: "allow", updatedInput: input };
+
+      const answers = await askQuestions(toolUseID, emit, signal, questions);
+      // No answer is allowed through unchanged, so the tool gives the CLI's own "nobody answered"
+      // result and the agent asks again in prose rather than the turn dying here.
+      return { behavior: "allow", updatedInput: answers ? { ...input, answers } : input };
+    }
+
     // Gate 2: every write, judged by what it actually does to the app.
     if (WRITE_TOOLS.has(toolName)) {
       const current = chat.task;
@@ -453,6 +512,12 @@ export function run({
       for (const [id, resolve] of pendingApprovals) {
         pendingApprovals.delete(id);
         resolve(false);
+      }
+      // A question nobody got to before the turn ended. Left in the map it would strand the next
+      // turn's answer on a promise no one is waiting on.
+      for (const [id, resolve] of pendingQuestions) {
+        pendingQuestions.delete(id);
+        resolve(null);
       }
       out.close();
     }
@@ -611,6 +676,29 @@ async function foreignHolders(
  * `canUseTool` is async, so waiting for a human is just an awaited promise; the approve route
  * resolves it by tool_use id. An abort resolves it as a refusal rather than leaving it hanging.
  */
+/**
+ * Put the agent's questions in front of the person and wait.
+ *
+ * `null` back means nobody answered — the turn was aborted, or the CLI's dialog deadline is about
+ * to pass. The caller turns that into `{behavior:"cancelled"}`, which is the CLI's own default and
+ * lands the agent back where it was before any of this: told that nobody answered.
+ */
+async function askQuestions(
+  id: string,
+  emit: (event: AgentEvent) => void,
+  signal: AbortSignal,
+  questions: AskQuestion[],
+): Promise<Record<string, string> | null> {
+  const answers = await new Promise<Record<string, string> | null>((resolve) => {
+    pendingQuestions.set(id, resolve);
+    signal.addEventListener("abort", () => resolve(null), { once: true });
+    emit({ type: "question", id, questions });
+  });
+  pendingQuestions.delete(id);
+  emit({ type: "question-answered", id, answers: answers ?? {} });
+  return answers;
+}
+
 async function askPerson(
   toolUseID: string,
   emit: (event: AgentEvent) => void,

@@ -329,6 +329,7 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
                   key={message.id}
                   live={isBusy && message.id === lastMessage?.id}
                   message={message}
+                  onAnswer={agent.answer}
                   onRespond={agent.respond}
                 />
               ),

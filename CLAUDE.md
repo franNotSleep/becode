@@ -87,6 +87,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
 | Filing the Linear issue a PR is tracked by | `agent/lib/linear.ts` |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
+| Answering the agent's questions | `askQuestions` in `agent/sdk/session.ts`, `app/api/agent/answer/` |
 | Always-on system prompt | `agent/instructions.md` |
 | HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts` |
 | CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
@@ -152,8 +153,9 @@ diff, which says what it does on its own.
 
 `becode.projects.ts` is now the **seed**, not the record. `agent/lib/db.ts` opens a `node:sqlite`
 database at `~/.becode/becode.db` (Node 24 ships it; no dependency) and, the first time the table
-is empty, inserts whatever the file declares. `allProjects` / `findProject` / `addProject` are the
-only ways in; nothing imports `becode.projects.ts` any more except the seed path.
+is empty, inserts whatever the file declares. `allProjects` / `findProject` / `addProject` /
+`saveProject` are the only ways in; nothing imports `becode.projects.ts` any more except the seed
+path.
 
 The reason is not per-person data — one becode per person on their own machine, so a file was
 already per-person. It is that the agent is meant to work a repo's boot recipe out for itself, and
@@ -196,6 +198,38 @@ before the gate is ever consulted, and a prompt is not a boundary.
 
 `propose_project` returns a draft `Project`; the person approves it through the same awaited
 promise gate 3 uses (`askPerson` in `session.ts`), and `addProject` writes the row.
+
+## Correcting a recipe the agent got wrong
+
+`propose_project` can only ever **add**. `addProject` throws on a duplicate id, and the gate wants
+`project.path` to equal `chat.discoveryRoot` — which is cleared the moment a project is added. So a
+dev script that turns out to pin its own port, or a service that moved, had no way back out except
+the sqlite file, and `saveProject` sat with no caller outside `db.check.ts`.
+
+The gear on a sidebar project row opens that recipe as a form (`app/_components/project-settings.tsx`
+→ `PATCH /api/projects/[id]`). **`id` and `path` are not editable** and are taken from the stored
+row: worktrees and chats are keyed on them, and a different repo is a different project. Neither is
+`designSystem`, which is not on the form and is preserved. Ports live as strings while they are
+being typed, so backspacing one is empty rather than `NaN`; a service's port stays optional, because
+a service binds whatever its own env says and only declares one so the port gate can spot a stale
+process squatting there.
+
+Validation is a zod schema in the route, not in the client — the form is a convenience and the route
+is the boundary. `explain()` turns the issue into a sentence naming the row (`"storefront" needs a
+port number between 1 and 65535.`) and returns the path as `field`, which is how the form marks the
+input; zod's own `apps.0.port: Too small` is a stack trace to the person this is built for. An edit
+lands in sqlite immediately and is read at the next `run_project`; nothing restarts a server that is
+already up.
+
+Two things the form marks itself rather than inheriting. `InputGroup`'s built-in
+`has-[…aria-invalid…]` error style **never compiles in this project** — verified absent from the
+running stylesheet — so the invalid ring is set from the error state directly. And `border-*`
+utilities lose to the unlayered `* { border-color: var(--border) }` in `globals.css`, the same trap
+as the font rule documented beside it, so the ring carries the error and the border does not.
+
+**The agent still cannot edit a recipe** — no tool reaches `saveProject`. It has `Bash` now, so
+`sqlite3 ~/.becode/becode.db` would work; `agent/instructions.md` asks it not to, and that is a
+request, not a boundary. The same sentence as the one at the top of this file.
 
 ## Chats, history, and two at once
 
@@ -366,10 +400,8 @@ Be clear-eyed about what that costs, because it is the invariant at the top of t
   goes on to do does.
 - **Gates 2 and 3 are untouched.** Every `Edit`/`Write` is still judged and still path-checked, and
   `open_pull_request` still stops for a person.
-- **`AskUserQuestion` is enabled but inert.** It runs, and the CLI answers it itself with "The user
-  did not answer the questions" — becode is a web page, not an interactive terminal, and nothing
-  renders the option cards. Verified on a live turn. The agent degrades gracefully and carries on;
-  wiring it would mean routing the questions through `askPerson` the way gate 3 does.
+- **`AskUserQuestion` is answered in `canUseTool`, and that is the only place it can be.** See
+  below.
 
 Every path, read or write, goes through `resolveInWorktree` in `canUseTool`. `cwd` alone is not a
 boundary: it is fixed when the query starts, so on the turn that calls `start_task` there is no
@@ -379,6 +411,49 @@ becode's own `.env.local`. The model declining to do that is not a boundary eith
 `propose_project` has a fourth gate, and it is the only one with **no judge**: adding a project is
 setup, not product work, so the role policy has nothing to rule on. A person confirms it, and the
 path must be the exact folder they picked.
+
+## The agent's own questions
+
+`AskUserQuestion` is answered by the person, and the wiring is not where you would guess.
+
+**becode never runs the tool.** The CLI does, and it reads the answers back out of *its own input*.
+With a terminal it fills them in by rendering the questions as the tool's permission prompt. The
+SDK's equivalent of that prompt is `canUseTool` — so the answers go in as `updatedInput`:
+
+```ts
+return { behavior: "allow", updatedInput: answers ? { ...input, answers } : input };
+```
+
+That is byte-for-byte what the CLI's own renderer sends. `answers` is keyed by the **question's
+text**, valued by the option's **label**, verbatim.
+
+**The `onUserDialog` route is a dead end here, and it looks like the right one.** The CLI registers
+a `permission_ask_user_question` dialog kind, and `supportedDialogKinds` + `onUserDialog` are real
+options that typecheck. It was built and it never fired: that dialog *is* the permission prompt, so
+a host with a `canUseTool` that returns `allow` has already answered the question the dialog exists
+to ask. Do not spend the afternoon again.
+
+**Four answer shapes, all verified on live turns**, because the docs only describe two:
+
+| The person… | The agent is told |
+| --- | --- |
+| picks an option | `Your questions have been answered: … You can now continue with these answers in mind.` |
+| picks several (`multiSelect`) | same, from `"Hero, FAQ"` — comma-separated, which the CLI parses back |
+| types their own words | `The user answered: … Read the answers carefully — they may request clarification, changes, or that you not proceed` |
+| answers nothing | `The user did not answer the questions.` — the pre-wiring behaviour, kept deliberately |
+
+The last row is why an unanswered question is `null` rather than an error: it hands the CLI back its
+own default, and `agent/instructions.md` tells the agent to ask again in prose instead of choosing.
+
+The rest is machinery becode already had. `askQuestions` is `askPerson` with a different answer
+type, `pendingQuestions` is `pendingApprovals`, `POST /api/agent/answer` is the approve route, and
+`ApprovalCard` in `components/agents/` — written for eve's `ask_question` and unused ever since —
+renders `questions[]` with `options[]`, `multiple` and `allowCustom` without a fork. Option
+descriptions are folded into the *displayed* label and stripped from what is sent, so the CEO reads
+"Sticky — stays visible while scrolling" and the model receives `Sticky`.
+
+Both events go through `emit`, so a reopened chat replays the card and its answer with no second
+read path.
 
 All the gates live in **one `canUseTool` callback** (`agent/sdk/session.ts`):
 
@@ -580,9 +655,10 @@ Two notes:
   slot for the `+`, no controlled expansion (a collapsed row cannot be reopened from state), and a
   drag-to-move affordance that would be a lie — a chat belongs to the worktree it created. Three
   workarounds cost more than the eighty lines in `app/_components/chat-sidebar.tsx`.
-- **`approval-card` is unused.** It rendered eve's `ask_question`; `AskUserQuestion` is in
-  `disallowedTools` because in a chat the agent can simply ask in a message. `tool-approval` is
-  what gate 3 renders.
+- **`approval-card` renders the agent's questions.** It was written for eve's `ask_question` and
+  sat unused for as long as `AskUserQuestion` was in `disallowedTools`; its `questions`/`options`/
+  `multiple`/`allowCustom` shape turned out to be exactly `AskUserQuestion`'s. `tool-approval` is
+  still what gate 3 renders — approve/deny, not a choice among several.
 
 `components/motion/text-shimmer.tsx` carries a **local fix**: the registry ships it importing its
 own constants from itself, which does not compile. It should come from `@/lib/text-shimmer`.
@@ -658,10 +734,10 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 - **A tool's name in `disallowedTools` is not always the name `canUseTool` sees.** Subagents are
   `Task` in the deny list and arrive as `Agent` in the callback. Verified on a live turn; both are
   in `FULL_ACCESS`.
-- **`AskUserQuestion` is answered by the CLI, not by the host.** With no interactive renderer it
-  returns "The user did not answer the questions" and the turn continues. There is no `canUseTool`
-  verdict that supplies an answer — `onUserDialog`/`supportedDialogKinds` cover dialog kinds like
-  `refusal_fallback_prompt`, not this tool.
+- **`AskUserQuestion` is answered by the CLI out of its own tool input.** A host supplies the
+  answers through `canUseTool`'s `updatedInput`, not through `onUserDialog` — see The agent's own
+  questions. `PermissionResult.updatedInput` is not only for narrowing a call; it is the documented
+  way to hand a tool data it could not have had.
 - **`canUseTool` is async** and receives `toolUseID`, which is what makes an awaited human
   approval possible without inventing a protocol.
 - **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Not

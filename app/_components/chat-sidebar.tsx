@@ -5,6 +5,7 @@ import {
   FolderPlusIcon,
   MessageSquareIcon,
   PlusIcon,
+  Settings2Icon,
   SquarePenIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -13,6 +14,7 @@ import type { ProjectDesign } from "@/agent/lib/impeccable";
 import { cn } from "@/lib/utils";
 import { DesignSystemCard } from "./design-system-card";
 import { ProjectPicker } from "./project-picker";
+import { ProjectSettings } from "./project-settings";
 
 export type ProjectChats = {
   id: string;
@@ -51,6 +53,7 @@ export function ChatSidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<string>();
   const [addingProject, setAddingProject] = useState(false);
+  const [editingProject, setEditingProject] = useState<string>();
 
   const load = useCallback(async () => {
     const response = await fetch("/api/sessions").catch(() => null);
@@ -112,6 +115,12 @@ export function ChatSidebar({
         open={addingProject}
       />
 
+      <ProjectSettings
+        onOpenChange={(open) => !open && setEditingProject(undefined)}
+        onSaved={load}
+        project={editingProject}
+      />
+
       <div className="min-h-0 flex-1 overflow-y-auto">
         {projects.map((project) => {
           const open = !collapsed.has(project.id);
@@ -139,6 +148,14 @@ export function ChatSidebar({
                   <span className="truncate">{project.id}</span>
                 </button>
                 <DesignSystemCard design={project.design} project={project.id} />
+                <button
+                  aria-label={`How ${project.id} boots`}
+                  className="hidden size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:grid group-hover:grid"
+                  onClick={() => setEditingProject(project.id)}
+                  type="button"
+                >
+                  <Settings2Icon className="size-3.5" />
+                </button>
                 <button
                   aria-label={`New chat in ${project.id}`}
                   className="hidden size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:grid group-hover:grid"

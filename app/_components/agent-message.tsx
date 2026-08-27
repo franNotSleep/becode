@@ -19,11 +19,13 @@ import {
   MessageBubbleContent,
   MessageContent,
 } from "@/components/agents/message";
+import { ApprovalCard } from "@/components/agents/approval-card";
 import { ToolApproval } from "@/components/agents/tool-approval";
 import { ImpeccableSetup, impeccableState } from "./impeccable-setup";
 import type { BecodeMessage, BecodePart } from "./use-becode-agent";
 
 type OnRespond = (id: string, approved: boolean) => void | Promise<void>;
+type OnAnswer = (id: string, answers: Record<string, string> | null) => void | Promise<void>;
 
 // beUI's Message is a layout primitive, so markdown stays on streamdown.
 const streamdownPlugins = { cjk, code, math, mermaid };
@@ -42,12 +44,14 @@ export function AgentMessage({
   canRespond,
   live = false,
   message,
+  onAnswer,
   onRespond,
 }: {
   readonly canRespond: boolean;
   /** This is the turn still streaming — its trailing activity shimmers instead of collapsing. */
   readonly live?: boolean;
   readonly message: BecodeMessage;
+  readonly onAnswer: OnAnswer;
   readonly onRespond: OnRespond;
 }) {
   // What the CEO typed reads as something they said: a bubble on their side. What becode says is
@@ -107,6 +111,7 @@ export function AgentMessage({
             <AgentMessagePart
               canRespond={canRespond}
               key={partKey(block.part, index)}
+              onAnswer={onAnswer}
               onRespond={onRespond}
               part={block.part}
             />
@@ -280,10 +285,12 @@ function summaryOf(tools: number, notes: number): string {
 
 function AgentMessagePart({
   canRespond,
+  onAnswer,
   onRespond,
   part,
 }: {
   readonly canRespond: boolean;
+  readonly onAnswer: OnAnswer;
   readonly onRespond: OnRespond;
   readonly part: BecodePart;
 }) {
@@ -311,7 +318,76 @@ function AgentMessagePart({
           tool={part.tool}
         />
       );
+    case "question":
+      return (
+        <AgentQuestion
+          canRespond={canRespond}
+          onAnswer={onAnswer}
+          part={part}
+        />
+      );
   }
+}
+
+/**
+ * The agent's own questions, answerable.
+ *
+ * The answer must be the option's **label**, verbatim — the CLI matches on it and keys the result
+ * by the question's text. Descriptions are folded into what is shown rather than into what is
+ * sent, so a CEO reads "Sticky — stays visible while scrolling" and the model receives "Sticky".
+ */
+function AgentQuestion({
+  canRespond,
+  onAnswer,
+  part,
+}: {
+  readonly canRespond: boolean;
+  readonly onAnswer: OnAnswer;
+  readonly part: Extract<BecodePart, { type: "question" }>;
+}) {
+  const pending = canRespond && part.status === "pending";
+
+  return (
+    <ApprovalCard
+      onDismiss={pending ? () => void onAnswer(part.id, null) : undefined}
+      onSubmit={
+        pending
+          ? (answers) => {
+              const chosen: Record<string, string> = {};
+              for (const question of part.questions) {
+                const given = answers[question.question];
+                if (!given) continue;
+                // Comma-separated is the documented multi-select shape, and a typed answer wins:
+                // the CLI takes any string, falling back to it when no option label matches.
+                const value = given.custom?.trim() || given.selected.join(", ");
+                if (value) chosen[question.question] = value;
+              }
+              void onAnswer(part.id, Object.keys(chosen).length > 0 ? chosen : null);
+            }
+          : undefined
+      }
+      questions={part.questions.map((question) => ({
+        id: question.question,
+        title: question.question,
+        description: question.header,
+        multiple: question.multiSelect === true,
+        allowCustom: true,
+        customPlaceholder: "Or say it in your own words…",
+        options: question.options.map((option) => ({
+          value: option.label,
+          label: option.description ? `${option.label} — ${option.description}` : option.label,
+        })),
+      }))}
+      result={
+        part.status === "answered"
+          ? Object.values(part.answers ?? {}).join(" · ") || "No answer — becode carried on."
+          : undefined
+      }
+      status={part.status === "answered" ? "answered" : "pending"}
+      submitLabel="Answer"
+      title="becode has a question"
+    />
+  );
 }
 
 /** Flatten a tool's input into the label/value rows the approval card renders. */
