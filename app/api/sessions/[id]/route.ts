@@ -1,5 +1,5 @@
 import { deleteSession, getSessionMessages, renameSession } from "@anthropic-ai/claude-agent-sdk";
-import { deleteEvents, findProject, loadEvents } from "@/agent/lib/db.ts";
+import { deleteEvents, findProject, lastEventId, loadEvents } from "@/agent/lib/db.ts";
 import { removeWorktree } from "@/agent/lib/git.ts";
 import { forgetChat } from "@/agent/lib/task.ts";
 import { replayEvents } from "@/agent/sdk/transcript.ts";
@@ -18,12 +18,15 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(_request: Request, { params }: Context) {
   const { id } = await params;
 
+  // `cursor` is the last row read. If this chat has a turn still running, the browser reattaches
+  // from there (`GET /api/agent/stream`) and picks up exactly what it does not already have.
   const events = loadEvents(id);
-  if (events.length > 0) return Response.json({ events });
+  if (events.length > 0) return Response.json({ events, cursor: lastEventId(id) });
 
   const messages = await getSessionMessages(id).catch(() => null);
   if (!messages) return Response.json({ message: "No such chat." }, { status: 404 });
-  return Response.json({ events: replayEvents(messages) });
+  // A chat that predates the table has no rows and so no turn of ours in flight either.
+  return Response.json({ events: replayEvents(messages), cursor: 0 });
 }
 
 export async function PATCH(request: Request, { params }: Context) {

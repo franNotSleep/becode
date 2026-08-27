@@ -1,19 +1,23 @@
 import { type Attachment, toBlocks } from "@/agent/lib/attachments.ts";
 import { blobUrl, putBlob, STORAGE_DOWN } from "@/agent/lib/blobs.ts";
-import { run, type TranscriptFile } from "@/agent/sdk/session.ts";
+import { follow, isRunning, startTurn } from "@/agent/sdk/live.ts";
+import { ndjson } from "@/agent/sdk/ndjson.ts";
+import type { TranscriptFile } from "@/agent/sdk/session.ts";
 import { backfillEvents } from "@/agent/sdk/transcript.ts";
 
 // The agent touches the host filesystem and spawns dev servers — it is not edge-compatible.
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const { message, sessionId, attachments, projectId, discoveryPath } = (await request.json()) as {
-    message?: unknown;
-    sessionId?: unknown;
-    attachments?: unknown;
-    projectId?: unknown;
-    discoveryPath?: unknown;
-  };
+  const { message, sessionId, attachments, projectId, discoveryPath, turnId } =
+    (await request.json()) as {
+      message?: unknown;
+      sessionId?: unknown;
+      attachments?: unknown;
+      projectId?: unknown;
+      discoveryPath?: unknown;
+      turnId?: unknown;
+    };
 
   if (typeof message !== "string" || message.trim().length === 0) {
     return Response.json({ message: "message is required" }, { status: 400 });
@@ -47,38 +51,30 @@ export async function POST(request: Request) {
 
   // A chat older than the messages table gets its history copied in before this turn is appended
   // to it, or the read path would find one row and call that the whole conversation.
-  const resumed = typeof sessionId === "string" ? sessionId : undefined;
+  // An empty string is not a session: it would key the turn under "" and hand the SDK a `resume`
+  // it cannot resolve.
+  const resumed = typeof sessionId === "string" && sessionId ? sessionId : undefined;
   if (resumed) await backfillEvents(resumed).catch(() => undefined);
 
-  const encoder = new TextEncoder();
-  const events = run({
+  // The turn is owned by `agent/sdk/live.ts`, not by this request: this response is one
+  // subscriber to it, and losing it — a closed tab, another chat clicked — leaves the agent
+  // running. Before that, an `Edit` caught mid-flight died as "AbortError: Stream closed".
+  //
+  // A new chat has no session id to be known by until the init message reports one, so the
+  // browser sends a `turnId` to stop and reattach by in the meantime.
+  const key = resumed ?? (typeof turnId === "string" ? turnId : crypto.randomUUID());
+  if (isRunning(key)) {
+    return Response.json({ message: "This chat is still working on the last message." }, { status: 409 });
+  }
+
+  const turn = startTurn(key, {
     message: message.trim(),
     attachments: blocks,
     files: stored,
     sessionId: resumed,
     projectId: typeof projectId === "string" ? projectId : undefined,
     discoveryPath: typeof discoveryPath === "string" ? discoveryPath : undefined,
-    signal: request.signal,
   });
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        for await (const event of events) {
-          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-        }
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "The agent stopped unexpectedly.";
-        controller.enqueue(encoder.encode(`${JSON.stringify({ type: "error", message })}\n`));
-      }
-      controller.close();
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-    },
-  });
+  return ndjson(follow(turn));
 }

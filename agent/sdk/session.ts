@@ -209,15 +209,7 @@ function describeEdit(input: Record<string, unknown>, worktree: string): string 
  * reaches `canUseTool`, which would silently skip the policy check. The only way to narrow the
  * surface here is `disallowedTools`, which removes a tool's definition outright.
  */
-export function run({
-  message,
-  attachments,
-  files,
-  sessionId,
-  projectId,
-  discoveryPath,
-  signal,
-}: {
+export type RunInput = {
   message: string;
   attachments: ContentBlockParam[];
   /** The same attachments already in object storage, as the transcript will remember them. */
@@ -227,27 +219,44 @@ export function run({
   projectId?: string;
   /** Set when the person pointed becode at a repo to add. See the read grant in `canUseTool`. */
   discoveryPath?: string;
+  /** Stopped only on purpose: `POST /api/agent/stop`, never a browser that went away. */
   signal: AbortSignal;
-}): AsyncIterable<AgentEvent> {
-  const out = channel<AgentEvent>();
-
   /**
-   * Every event goes to the browser and to sqlite, which is the whole point of one chokepoint.
+   * Where every event goes, with the `messages` row it landed on — `-1` before there is a session
+   * to write against. Synchronous on purpose: an approval event has to reach the browser *before*
+   * the `canUseTool` that is about to block on it, which is why this is a call and not a queue.
+   */
+  sink: (event: AgentEvent, storedId: number) => void;
+};
+
+export async function run({
+  message,
+  attachments,
+  files,
+  sessionId,
+  projectId,
+  discoveryPath,
+  signal,
+  sink,
+}: RunInput): Promise<void> {
+  /**
+   * Every event goes to the subscribers and to sqlite, which is the whole point of one chokepoint.
    *
    * Buffered until a session id is known — a brand new chat has no row to write against until the
    * init message reports one, and tool calls always come after init. Written per event rather than
-   * once at the end so an aborted turn keeps what it already produced.
+   * once at the end so a stopped turn keeps what it already produced.
    */
   let storeId: string | undefined = sessionId;
   const pending: AgentEvent[] = [];
-  const keep = (event: AgentEvent) => {
+  /** The row this event landed on. `-1` while there is still nothing to write against. */
+  const keep = (event: AgentEvent): number => {
     pending.push(event);
-    if (storeId) appendEvents(storeId, pending.splice(0));
+    if (!storeId) return -1;
+    // This event is the last of the batch, so the last id back is its own.
+    const ids = appendEvents(storeId, pending.splice(0));
+    return ids[ids.length - 1];
   };
-  const emit = (event: AgentEvent) => {
-    out.push(event);
-    keep(event);
-  };
+  const emit = (event: AgentEvent) => sink(event, keep(event));
 
   // This chat's state. A resumed chat finds the worktree it already has; a new one starts empty.
   const chat: Chat = chatFor(sessionId);
@@ -263,8 +272,7 @@ export function run({
 
   if (!hasAuth()) {
     emit({ type: "error", message: AUTH_HINT });
-    out.close();
-    return out;
+    return;
   }
 
   /**
@@ -435,141 +443,95 @@ export function run({
   /** tool_use ids whose results should also stay out of the transcript. */
   const hiddenCalls = new Set<string>();
 
-  void (async () => {
-    try {
-      const response = query({
-        // A plain string when there is nothing attached — the path that has always worked. Blocks
-        // only exist in the streaming-input form, so that form is used only when there are some.
-        prompt: attachments.length === 0 ? message : oneUserMessage(attachments, message),
-        options: {
-          // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
-          // calls start_task there is no worktree yet, and anything relative would resolve into
-          // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
-          cwd:
-            chat.task?.worktree ??
-            chat.discoveryRoot ??
-            (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
-          systemPrompt: await systemPrompt(chat),
-          mcpServers: { becode: becodeTools(chat) },
-          // cwd is the target worktree, so this must be absolute: becode's own skills live here,
-          // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.
-          plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
-          // No allowedTools, no permissionMode — see the note above. Empty by choice: the operator
-          // wants the whole harness. Narrowing it again is one entry here — a scoped rule like
-          // `Bash(git push:*)` blocks only what it names — and `FULL_ACCESS` above is the matching
-          // half, since a tool has to pass both to run.
-          disallowedTools: [],
-          // Load no settings files. A `permissions.allow` rule in the *target repo's*
-          // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
-          // and the target repo is not becode's trust boundary.
-          settingSources: [],
-          // Claude Code's bundled skills are written for a developer at a terminal — `run` and
-          // `code-review` would compete with run_project and with becode's actual loop. Only the
-          // becode plugin's four skills should be routable. Plugins are unaffected by this.
-          settings: { disableBundledSkills: true },
-          canUseTool,
-          maxTurns: MAX_TURNS,
-          resume: sessionId,
-          abortController: toController(signal),
-        },
-      });
+  try {
+    const response = query({
+      // A plain string when there is nothing attached — the path that has always worked. Blocks
+      // only exist in the streaming-input form, so that form is used only when there are some.
+      prompt: attachments.length === 0 ? message : oneUserMessage(attachments, message),
+      options: {
+        // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
+        // calls start_task there is no worktree yet, and anything relative would resolve into
+        // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
+        cwd:
+          chat.task?.worktree ??
+          chat.discoveryRoot ??
+          (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
+        systemPrompt: await systemPrompt(chat),
+        mcpServers: { becode: becodeTools(chat) },
+        // cwd is the target worktree, so this must be absolute: becode's own skills live here,
+        // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.
+        plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
+        // No allowedTools, no permissionMode — see the note above. Empty by choice: the operator
+        // wants the whole harness. Narrowing it again is one entry here — a scoped rule like
+        // `Bash(git push:*)` blocks only what it names — and `FULL_ACCESS` above is the matching
+        // half, since a tool has to pass both to run.
+        disallowedTools: [],
+        // Load no settings files. A `permissions.allow` rule in the *target repo's*
+        // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
+        // and the target repo is not becode's trust boundary.
+        settingSources: [],
+        // Claude Code's bundled skills are written for a developer at a terminal — `run` and
+        // `code-review` would compete with run_project and with becode's actual loop. Only the
+        // becode plugin's four skills should be routable. Plugins are unaffected by this.
+        settings: { disableBundledSkills: true },
+        canUseTool,
+        maxTurns: MAX_TURNS,
+        resume: sessionId,
+        abortController: toController(signal),
+      },
+    });
 
-      for await (const sdkMessage of response) {
-        // Every system message carries session_id, not just the init one — emit on change only.
-        if (sdkMessage.type === "system" && "session_id" in sdkMessage) {
-          const id = String(sdkMessage.session_id);
-          if (id !== lastSessionId) {
-            lastSessionId = id;
-            rememberChat(chat, id);
-            untagged = id;
-            // A chat that gets a new id (a fork, a compaction) keeps its history: the rows move
-            // with it, or everything before this point becomes unreachable from the sidebar.
-            if (storeId && storeId !== id) moveEvents(storeId, id);
-            storeId = id;
-            emit({ type: "session", sessionId: id });
-          }
-          continue;
+    for await (const sdkMessage of response) {
+      // Every system message carries session_id, not just the init one — emit on change only.
+      if (sdkMessage.type === "system" && "session_id" in sdkMessage) {
+        const id = String(sdkMessage.session_id);
+        if (id !== lastSessionId) {
+          lastSessionId = id;
+          rememberChat(chat, id);
+          untagged = id;
+          // A chat that gets a new id (a fork, a compaction) keeps its history: the rows move
+          // with it, or everything before this point becomes unreachable from the sidebar.
+          if (storeId && storeId !== id) moveEvents(storeId, id);
+          storeId = id;
+          emit({ type: "session", sessionId: id });
         }
+        continue;
+      }
 
-        if (sdkMessage.type === "assistant") {
-          for (const event of assistantEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
-          continue;
-        }
+      if (sdkMessage.type === "assistant") {
+        for (const event of assistantEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
+        continue;
+      }
 
-        if (sdkMessage.type === "user") {
-          for (const event of toolResultEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
-        }
+      if (sdkMessage.type === "user") {
+        for (const event of toolResultEvents(sdkMessage.message.content, hiddenCalls)) emit(event);
       }
-      emit({ type: "done" });
-    } catch (e) {
-      emit({ type: "error", message: (e as Error).message });
-    } finally {
-      // How the sidebar tells becode's chats apart from the terminal sessions living in the same
-      // repo — a chat that never starts a task sits on the project's own branch and is otherwise
-      // indistinguishable. Tagged at the *end*: on the init message the CLI has not written the
-      // session file yet, and tagSession silently finds nothing to tag.
-      if (untagged) await tagSession(untagged, "becode").catch(() => undefined);
-      for (const [id, resolve] of pendingApprovals) {
-        pendingApprovals.delete(id);
-        resolve(false);
-      }
-      // A question nobody got to before the turn ended. Left in the map it would strand the next
-      // turn's answer on a promise no one is waiting on.
-      for (const [id, resolve] of pendingQuestions) {
-        pendingQuestions.delete(id);
-        resolve(null);
-      }
-      out.close();
     }
-  })();
-
-  return out;
-}
-
-/**
- * A push channel the consumer can drain while the producer is blocked.
- *
- * This matters: `canUseTool` stalls the SDK loop while it waits for a person to approve a pull
- * request, so the approval event has to reach the browser *before* the thing it is waiting on
- * resolves. Buffering events and flushing them between SDK messages would deadlock.
- */
-function channel<T>() {
-  const items: T[] = [];
-  let waiting: ((result: IteratorResult<T>) => void) | null = null;
-  let closed = false;
-
-  return {
-    push(value: T) {
-      if (waiting) {
-        const resolve = waiting;
-        waiting = null;
-        resolve({ value, done: false });
-      } else {
-        items.push(value);
-      }
-    },
-    close() {
-      closed = true;
-      if (waiting) {
-        const resolve = waiting;
-        waiting = null;
-        resolve({ value: undefined as never, done: true });
-      }
-    },
-    [Symbol.asyncIterator](): AsyncIterator<T> {
-      return {
-        next(): Promise<IteratorResult<T>> {
-          if (items.length > 0) {
-            return Promise.resolve({ value: items.shift() as T, done: false });
-          }
-          if (closed) return Promise.resolve({ value: undefined as never, done: true });
-          return new Promise((resolve) => {
-            waiting = resolve;
-          });
-        },
-      };
-    },
-  };
+    emit({ type: "done" });
+  } catch (e) {
+    // A stop is not a failure, and the SDK's own abort text reads like one to the person who
+    // pressed the button.
+    emit({
+      type: "error",
+      message: signal.aborted ? "You stopped this turn." : (e as Error).message,
+    });
+  } finally {
+    // How the sidebar tells becode's chats apart from the terminal sessions living in the same
+    // repo — a chat that never starts a task sits on the project's own branch and is otherwise
+    // indistinguishable. Tagged at the *end*: on the init message the CLI has not written the
+    // session file yet, and tagSession silently finds nothing to tag.
+    if (untagged) await tagSession(untagged, "becode").catch(() => undefined);
+    for (const [id, resolve] of pendingApprovals) {
+      pendingApprovals.delete(id);
+      resolve(false);
+    }
+    // A question nobody got to before the turn ended. Left in the map it would strand the next
+    // turn's answer on a promise no one is waiting on.
+    for (const [id, resolve] of pendingQuestions) {
+      pendingQuestions.delete(id);
+      resolve(null);
+    }
+  }
 }
 
 /**

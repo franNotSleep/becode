@@ -144,13 +144,30 @@ export function deleteChatState(sessionId: string): void {
  * ponytail: a row per event, including every `delta`. Coalescing consecutive deltas at write time
  * is the upgrade path if a long chat ever loads slowly.
  */
-export function appendEvents(sessionId: string, events: AgentEvent[]): void {
-  if (events.length === 0) return;
+/**
+ * Append events to a chat, and hand back the row id each one landed on.
+ *
+ * The ids are the cursor a browser reattaching mid-turn resumes from: they are absolute and
+ * monotonic, so "everything after what I already have" is a comparison rather than a diff.
+ * `moveEvents` keeps them, because it moves rows rather than rewriting them.
+ */
+export function appendEvents(sessionId: string, events: AgentEvent[]): number[] {
+  if (events.length === 0) return [];
   const statement = db().prepare(
     "INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)",
   );
   const at = Date.now();
-  for (const event of events) statement.run(sessionId, JSON.stringify(event), at);
+  return events.map(
+    (event) => Number(statement.run(sessionId, JSON.stringify(event), at).lastInsertRowid),
+  );
+}
+
+/** The cursor a reader has caught up to once it has read this chat's stored events. 0 if none. */
+export function lastEventId(sessionId: string): number {
+  const [row] = db()
+    .prepare("SELECT MAX(id) AS last FROM messages WHERE session_id = ?")
+    .all(sessionId) as { last: number | null }[];
+  return row?.last ?? 0;
 }
 
 /** Every event of a chat, in the order it was produced. Empty for a chat that predates this table. */

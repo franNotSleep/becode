@@ -55,12 +55,21 @@ export function useBecodeAgent() {
   const [openChatId, setOpenChatId] = useState<string>();
   const sessionId = useRef<string | undefined>(undefined);
   const abort = useRef<AbortController | undefined>(undefined);
+  /**
+   * What the running turn is known by on the server, for Stop.
+   *
+   * The session id once there is one; until the init message reports one, the id this browser
+   * made up and sent with the message. The turn belongs to the server now (`agent/sdk/live.ts`),
+   * so stopping it is a request rather than dropping the connection.
+   */
+  const turnKey = useRef<string | undefined>(undefined);
   /** A ref, not state: `addProject` sets it and sends in the same tick. */
   const discoveryPath = useRef<string | undefined>(undefined);
 
   const apply = useCallback((event: AgentEvent) => {
     if (event.type === "session") {
       sessionId.current = event.sessionId;
+      turnKey.current = event.sessionId;
       setOpenChatId(event.sessionId);
       return;
     }
@@ -97,6 +106,8 @@ export function useBecodeAgent() {
 
       const controller = new AbortController();
       abort.current = controller;
+      const turnId = crypto.randomUUID();
+      turnKey.current = sessionId.current ?? turnId;
 
       try {
         const response = await fetch("/api/agent", {
@@ -108,6 +119,7 @@ export function useBecodeAgent() {
             projectId,
             discoveryPath: discoveryPath.current,
             attachments,
+            turnId,
           }),
           signal: controller.signal,
         });
@@ -131,8 +143,19 @@ export function useBecodeAgent() {
     [apply, projectId],
   );
 
+  /**
+   * Stop the turn, rather than stop watching it.
+   *
+   * Dropping the connection is what this used to do, and it killed the agent wherever it had got
+   * to — mid-`Edit`, that arrived as `AbortError: Stream closed`. The connection is left open so
+   * the person sees the turn wind down and say so.
+   */
   const cancel = useCallback(() => {
-    abort.current?.abort();
+    void fetch("/api/agent/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: turnKey.current }),
+    }).catch(() => undefined);
   }, []);
 
   /** An empty chat, optionally already about a project — that is what scopes it before a word. */
@@ -152,22 +175,50 @@ export function useBecodeAgent() {
    * The server replays it as the same event stream a live turn produces, so it folds through the
    * same reducer — a replayed tool row cannot render differently from the one that streamed.
    */
-  const open = useCallback(async (id: string, project?: string) => {
-    abort.current?.abort();
-    discoveryPath.current = undefined;
-    setError(undefined);
-    setProjectId(project);
-    setOpenChatId(id);
-    sessionId.current = id;
-    setMessages([]);
-    const response = await fetch(`/api/sessions/${id}`);
-    if (!response.ok) {
-      setError("That chat could not be opened.");
-      return;
-    }
-    const { events } = (await response.json()) as { events: AgentEvent[] };
-    setMessages(events.reduce(reduce, []));
-  }, []);
+  const open = useCallback(
+    async (id: string, project?: string) => {
+      abort.current?.abort();
+      discoveryPath.current = undefined;
+      setError(undefined);
+      setProjectId(project);
+      setOpenChatId(id);
+      sessionId.current = id;
+      turnKey.current = id;
+      setMessages([]);
+      const response = await fetch(`/api/sessions/${id}`);
+      if (!response.ok) {
+        setError("That chat could not be opened.");
+        return;
+      }
+      const { events, cursor } = (await response.json()) as {
+        events: AgentEvent[];
+        cursor?: number;
+      };
+      setMessages(events.reduce(reduce, []));
+
+      // The chat may still be working: the turn belongs to the server, not to whichever tab
+      // started it. `cursor` is the last stored event just read, so this picks up from there —
+      // an empty stream, which is the ordinary case, just ends.
+      const controller = new AbortController();
+      abort.current = controller;
+      try {
+        const live = await fetch(`/api/agent/stream?sessionId=${id}&after=${cursor ?? 0}`, {
+          signal: controller.signal,
+        });
+        if (!live.ok || !live.body) return;
+        for await (const event of readNdjson(live.body)) {
+          setStatus("streaming");
+          apply(event);
+        }
+      } catch {
+        // Another chat was opened, or the connection went. Neither stops the turn.
+      } finally {
+        if (abort.current === controller) abort.current = undefined;
+        setStatus("ready");
+      }
+    },
+    [apply],
+  );
 
   /**
    * Point becode at a repo to add.

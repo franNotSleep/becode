@@ -22,6 +22,7 @@
     "check:reads": "node --experimental-strip-types agent/lib/reads.check.ts",
     "check:ports": "node --experimental-strip-types agent/lib/ports.check.ts",
     "check:logs": "node --experimental-strip-types agent/lib/logs.check.ts",
+  "check:live": "node --experimental-strip-types agent/sdk/live.check.ts",
     "check:impeccable": "node --experimental-strip-types agent/lib/impeccable.check.ts",
   "check:linear": "node --experimental-strip-types agent/lib/linear.check.ts",
     "check:suggestions": "node --experimental-strip-types lib/skill-suggestions.check.ts",

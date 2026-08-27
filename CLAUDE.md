@@ -89,7 +89,8 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Answering the agent's questions | `askQuestions` in `agent/sdk/session.ts`, `app/api/agent/answer/` |
 | Always-on system prompt | `agent/instructions.md` |
-| HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts` |
+| **A turn in flight, and who is watching it** | `agent/sdk/live.ts` |
+| HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts`, `stream/route.ts`, `stop/route.ts` |
 | CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
 | Is it live, and at which URLs | `app/_components/live-status.tsx` ← `GET /api/agent/status` |
 
@@ -293,6 +294,35 @@ so the browser and sqlite always see the same stream. Four things follow:
 Reopening a chat replays it as the **same event stream** a live turn produces
 (`agent/sdk/transcript.ts` walks the blocks once, for both), folded by the same client reducer. A
 replayed tool row cannot render differently from the one that streamed.
+
+**A turn is not the HTTP request, and used to be.** `run()` was driven by the `for await` inside
+the response stream and aborted on `request.signal`, so *anything* that ended the fetch stopped the
+agent: the Stop button, but equally clicking another chat, reloading, or closing the tab. Caught
+mid-`Edit` — while the CLI was waiting on `canUseTool` — that arrived as `Tool permission request
+failed: AbortError: Stream closed`, and left a half-applied change in a worktree with no way to
+reach the rest of the turn. The CEO hit it by switching chats.
+
+`agent/sdk/live.ts` owns the turn now and a browser is a **subscriber**:
+
+- **Stopping is an act, not a disconnect.** `POST /api/agent/stop` aborts the run; `cancel()` calls
+  it and leaves the connection open, so the person watches the turn wind down and reads *You
+  stopped this turn.* rather than seeing the transcript freeze.
+- **Reattaching is `GET /api/agent/stream?sessionId=&after=`.** The cursor is the `messages` row
+  id, which `GET /api/sessions/[id]` now returns beside the history — the same absolute-cursor
+  arrangement as the log ring buffer. Nothing arrives twice, and nothing produced between the two
+  requests is missed. `open()` always asks; nothing live is an empty stream, not an error.
+- **`follow` takes its wait *before* draining.** The other order drops any event appended between
+  the drain and the wait — which is exactly the event the turn was producing while the browser
+  reconnected. `check:live` pins that, and that a late subscriber still gets the backlog.
+- **A second message while a turn runs is a 409**, not a second query on one session.
+- **`run` takes a `sink` instead of returning an iterable**, so the push channel that existed to
+  let a consumer drain while the producer blocked is gone — a synchronous call already has that
+  property, which is what an approval event needs to reach the browser before the `canUseTool`
+  waiting on it.
+
+What is *not* solved: a reload does not reopen the chat by itself, so the person clicks it in the
+sidebar and the turn resumes rendering from there. And `live.ts`'s map has no eviction — one
+turn's events per chat since the process started.
 
 ## Seeing what is running, and why it isn't
 
@@ -710,6 +740,7 @@ npm run check:blobs          # object storage: round trip, content-addressing, k
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
+npm run check:live           # a turn outliving its subscribers: backlog, cursor, the append race
 npm run check:impeccable     # design context: found, found-but-uncommitted, absent
 npm run check:linear         # which Linear team an issue is filed against — no network
 npm run check:suggestions    # the composer chips: threshold, ranking, cap
