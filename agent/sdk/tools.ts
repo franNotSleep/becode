@@ -295,6 +295,7 @@ export function becodeTools(chat: Chat) {
             body,
             branch: current.branch,
             projectId: current.projectId,
+            teamKey: project.linearTeam,
           }).catch((error: Error) => error)
         : undefined;
       const filed = issue instanceof Error ? undefined : issue;

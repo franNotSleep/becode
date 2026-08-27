@@ -29,6 +29,13 @@ export type Project = {
    */
   services?: { name: string; command: string; port?: number }[];
   /**
+   * The Linear team key (`TIX`) this project's issues are filed under, chosen in project
+   * settings. The identifier it produces goes into the pushed branch name, which is the whole
+   * link between the PR and the issue — so a workspace with more than one team has to be told
+   * which, rather than guessed at.
+   */
+  linearTeam?: string;
+  /**
    * Files that define the look of the app — tokens, theme config, component index.
    * The agent reads these before any visual change instead of inventing values.
    */

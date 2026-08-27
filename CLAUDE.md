@@ -481,6 +481,14 @@ issue identifier goes into the pushed branch name: `becode/tix-123-<slug>`. That
 link — Linear's GitHub integration attaches the PR, and moves the issue on open and on merge. The
 state machine is a feature Linear already ships; becode does not reimplement it.
 
+**The team is the project's, not the first one Linear lists.** `target()` used to take
+`teams.nodes[0]` because one person against one workspace has one possible answer; the workspace
+grew a second team and every issue was filed against `AIRA`, identifier and branch name and all.
+`Project.linearTeam` is a team key picked from a dropdown in project settings
+(`GET /api/linear/teams`), and `pickTeam` only guesses when the token sees exactly one team —
+otherwise it throws, which surfaces as the warning below rather than a failed PR. `check:linear`
+drives all four branches without a network call.
+
 **At PR time, not at `start_task`.** An issue created when a chat starts would be an outbound write
 to a shared workspace on the weakest gate becode has — gate 1 judges the agent's *restatement* of
 the request — and every abandoned experiment would leave one behind. Inside `open_pull_request`,
@@ -703,6 +711,7 @@ npm run check:reads          # the read boundary: worktree, discovery grant, sec
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
 npm run check:impeccable     # design context: found, found-but-uncommitted, absent
+npm run check:linear         # which Linear team an issue is filed against — no network
 npm run check:suggestions    # the composer chips: threshold, ranking, cap
 npm run check:tokens         # slash tokens: leading-only, exact coverage, real skills only
 npm run build                # next build

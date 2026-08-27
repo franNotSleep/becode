@@ -12,6 +12,9 @@ export const projects = defineProjects([
     path: "/Users/frannotsleep/Dev/tixdo/web",
     baseBranch: "main",
     install: "pnpm install --frozen-lockfile",
+    // The Linear team PRs are filed under. Not a guess: the workspace has more than one team,
+    // and the issue identifier ends up in the branch name.
+    linearTeam: "TIX",
     // Shared, fixed-port, and run from the source checkout — see `services` in projects.ts.
     // The backend's own .env pins it to :3031, which both apps already point at.
     services: [

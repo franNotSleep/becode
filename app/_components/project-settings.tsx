@@ -13,18 +13,37 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 /** Ports live as strings while they are being typed — backspacing one to empty is not NaN. */
 type Row = { name: string; command: string; port: string };
-type Form = { baseBranch: string; install: string; apps: Row[]; services: Row[] };
+type Form = {
+  baseBranch: string;
+  install: string;
+  /** A Linear team key, or "" for none. */
+  linearTeam: string;
+  apps: Row[];
+  services: Row[];
+};
+type Team = { key: string; name: string };
+
+/** The value of "file these nowhere" — Select has no empty-string item. */
+const NO_TEAM = "none";
 type Kind = "apps" | "services";
 
 const toForm = (project: Project): Form => ({
   baseBranch: project.baseBranch,
   install: project.install ?? "",
+  linearTeam: project.linearTeam ?? "",
   apps: project.apps.map((app) => ({ ...app, port: String(app.port) })),
   services: (project.services ?? []).map((service) => ({
     ...service,
@@ -77,6 +96,22 @@ export function ProjectSettings({
   const [form, setForm] = useState<Form>();
   const [error, setError] = useState<{ message: string; field?: string }>();
   const [saving, setSaving] = useState(false);
+  const [teams, setTeams] = useState<Team[]>([]);
+
+  // Once per dialog open, and separate from the project: Linear being down or unconfigured is
+  // not a reason the recipe cannot be edited.
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void (async () => {
+      const response = await fetch("/api/linear/teams").catch(() => null);
+      const body = await response?.json().catch(() => null);
+      if (!cancelled && response?.ok) setTeams((body as { teams: Team[] }).teams);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project]);
 
   useEffect(() => {
     if (!project) return;
@@ -132,6 +167,7 @@ export function ProjectSettings({
       body: JSON.stringify({
         baseBranch: form.baseBranch,
         install: form.install,
+        linearTeam: form.linearTeam,
         apps: form.apps.map((app) => ({ ...app, port: Number(app.port) })),
         // A service binds whatever its own env says; the port is only declared so the port gate
         // can notice a stale one squatting there, and plenty of services have none to declare.
@@ -302,6 +338,39 @@ export function ProjectSettings({
                   value={form.install}
                 />
               </label>
+              {teams.length ? (
+                <>
+                  <label className="flex items-center gap-3 text-sm">
+                    <span className="w-24 shrink-0 text-muted-foreground text-xs">Linear</span>
+                    <Select
+                      onValueChange={(value) =>
+                        change("linearTeam", (previous) => ({
+                          ...previous,
+                          linearTeam: value === NO_TEAM ? "" : value,
+                        }))
+                      }
+                      value={form.linearTeam || NO_TEAM}
+                    >
+                      <SelectTrigger className="h-8 flex-1 text-xs" size="sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_TEAM}>Not chosen</SelectItem>
+                        {teams.map((team) => (
+                          <SelectItem key={team.key} value={team.key}>
+                            {team.name} <span className="font-mono text-xs">({team.key})</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <p className="pl-27 text-muted-foreground text-xs leading-relaxed">
+                    The team every pull request from this project is filed under. Its issue
+                    identifier goes in the branch name, which is what links the two. Without one,
+                    pull requests still open — untracked.
+                  </p>
+                </>
+              ) : null}
             </div>
 
             {section("apps")}

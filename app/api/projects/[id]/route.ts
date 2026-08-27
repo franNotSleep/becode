@@ -19,6 +19,9 @@ type Context = { params: Promise<{ id: string }> };
 const Recipe = z.object({
   baseBranch: z.string().trim().min(1),
   install: z.string().trim().optional(),
+  /** A Linear team key, or "" for none. Not validated against Linear — the picker only offers
+   * teams the token can see, and a stale key surfaces as a warning on an open PR. */
+  linearTeam: z.string().trim().optional(),
   apps: z
     .array(
       z.object({
@@ -92,6 +95,11 @@ export async function PATCH(request: Request, { params }: Context) {
   }
 
   // designSystem is not on the form; keep whatever the row already carries.
-  saveProject({ ...stored, ...parsed.data, install: parsed.data.install || undefined });
+  saveProject({
+    ...stored,
+    ...parsed.data,
+    install: parsed.data.install || undefined,
+    linearTeam: parsed.data.linearTeam || undefined,
+  });
   return Response.json({ ok: true });
 }

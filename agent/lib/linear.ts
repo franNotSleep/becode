@@ -38,23 +38,50 @@ export function hasLinear(): boolean {
 
 export type Filed = { id: string; identifier: string; url: string };
 
-/** Resolved once per process — the team and its `becode` label do not change under us. */
-let resolved: { teamId: string; labelIds: string[] } | null = null;
+/** The teams this token can see — for the picker in a project's settings. */
+export async function listTeams(): Promise<{ key: string; name: string }[]> {
+  const teams = await linear().teams({ first: 50 });
+  return teams.nodes.map((team) => ({ key: team.key, name: team.name }));
+}
+
+/** Resolved once per team — a team and its `becode` label do not change under us. */
+const resolved = new Map<string, { teamId: string; labelIds: string[] }>();
 
 /**
- * The team to file against, and the `becode` label, creating the label the first time.
+ * Which team an issue is filed against.
  *
- * The team is whichever one the token can see, not a configured key: becode runs for one person
- * against one workspace, and a `becode.config.ts` entry would be a second place to keep in sync
- * with a value that has exactly one possible answer today.
+ * The project's (`Project.linearTeam`, picked in project settings), because a workspace has as
+ * many teams as the company has and an issue filed against the wrong one is worse than none: the
+ * identifier goes into the branch name, so the whole PR lands under it. This used to be
+ * `nodes[0]` on the grounds that one person against one workspace has exactly one possible
+ * answer — and every issue went to whichever team Linear happened to list first.
+ *
+ * Unset is only guessed when there is nothing to guess between. Otherwise it throws, and
+ * `fileIssue`'s caller turns that into a warning on an open PR rather than a failure.
  */
-async function target(): Promise<{ teamId: string; labelIds: string[] }> {
-  if (resolved) return resolved;
+export function pickTeam<T extends { key: string }>(teams: T[], key?: string): T {
+  if (key) {
+    const team = teams.find((node) => node.key === key);
+    if (team) return team;
+    throw new Error(`This Linear token sees no team "${key}". Pick one in the project's settings.`);
+  }
+  if (!teams.length) throw new Error("This Linear token can see no teams.");
+  if (teams.length > 1) {
+    throw new Error(
+      `This Linear workspace has more than one team (${teams
+        .map((node) => node.key)
+        .join(", ")}). Choose the one to file against in the project's settings.`,
+    );
+  }
+  return teams[0];
+}
 
-  const teams = await linear().teams({ first: 2 });
-  const team = teams.nodes[0];
-  if (!team) throw new Error("This Linear token can see no teams.");
+/** The team and its `becode` label, creating the label the first time. */
+async function target(key?: string): Promise<{ teamId: string; labelIds: string[] }> {
+  const cached = resolved.get(key ?? "");
+  if (cached) return cached;
 
+  const team = pickTeam((await linear().teams({ first: 50 })).nodes, key);
   const labels = await team.labels({ first: 250 });
   const existing = labels.nodes.find((label) => label.name === LABEL);
   const label =
@@ -63,8 +90,9 @@ async function target(): Promise<{ teamId: string; labelIds: string[] }> {
       await linear().createIssueLabel({ name: LABEL, teamId: team.id })
     ).issueLabel);
 
-  resolved = { teamId: team.id, labelIds: label ? [label.id] : [] };
-  return resolved;
+  const found = { teamId: team.id, labelIds: label ? [label.id] : [] };
+  resolved.set(key ?? "", found);
+  return found;
 }
 
 /**
@@ -83,8 +111,10 @@ export async function fileIssue(input: {
   body: string;
   branch: string;
   projectId: string;
+  /** `Project.linearTeam` — the team key this project's issues belong to. */
+  teamKey?: string;
 }): Promise<Filed> {
-  const { teamId, labelIds } = await target();
+  const { teamId, labelIds } = await target(input.teamKey);
 
   // Everything a reviewer needs without the chat. The PR link is not written here — the branch
   // carries the identifier, so Linear's GitHub integration attaches the PR itself.
