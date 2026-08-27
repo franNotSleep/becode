@@ -57,6 +57,8 @@ export interface AgentActivityTrace {
   label: ReactNode;
   detail?: ReactNode;
   icon?: ReactNode;
+  /** Local fork: the payload behind the row. Present → the row becomes a disclosure. */
+  body?: ReactNode;
 }
 
 export type AgentActivityItem =

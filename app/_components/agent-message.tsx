@@ -5,7 +5,7 @@ import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { CircleAlertIcon, FileTextIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { Streamdown } from "streamdown";
 import {
   AgentActivity,
@@ -199,6 +199,7 @@ function Activity({ live, parts }: { readonly live: boolean; readonly parts: Bec
   const items: AgentActivityItem[] = parts.map((part, index) =>
     part.type === "tool"
       ? {
+          body: <ToolDetail part={part} />,
           detail: detailOf(part.name, part.title),
           icon:
             part.state === "error" ? (
@@ -237,14 +238,20 @@ function Activity({ live, parts }: { readonly live: boolean; readonly parts: Bec
 
   const tools = parts.filter((part) => part.type === "tool").length;
   const notes = parts.length - tools;
+  const failed = parts.filter((part) => part.type === "tool" && part.state === "error").length;
 
   return (
     <>
       <AgentActivity
         activeLabel={activeLabel(parts)}
         items={items}
+        // Live, the run is a shimmer over a fixed window. Finished and expanded, it is not capped
+        // at all: beui scrolls the overflow behind `scrollbar-hide`, so a clipped payload looks
+        // exactly like a complete one. Uncapped, the page scrolls instead — one scrollbar, and
+        // the browser's own find-in-page reaches an error nobody thought to scroll to.
+        maxHeight={live ? 208 : 100_000}
         status={live ? "working" : "complete"}
-        summary={summaryOf(tools, notes)}
+        summary={summaryOf(tools, notes, failed)}
       />
       {cards}
     </>
@@ -275,12 +282,72 @@ function activeLabel(parts: BecodePart[]): string {
   return line.length > 80 ? `${line.slice(0, 80)}…` : line || "Working through it";
 }
 
-function summaryOf(tools: number, notes: number): string {
+/**
+ * What the collapsed run says it did — including what it failed to do.
+ *
+ * A refusal used to be a rose icon *inside* the disclosure, so a run that got nowhere read as
+ * "3 tool calls" and the person was left with the agent's prose and no way to check it. The count
+ * is on the outside now. It still does not auto-expand: a policy refusal is a normal outcome, and
+ * the person this is built for should not be handed a tool trace they did not ask for.
+ */
+function summaryOf(tools: number, notes: number, failed: number): ReactNode {
   const counted = [
     tools > 0 ? `${tools} tool ${tools === 1 ? "call" : "calls"}` : "",
     notes > 0 ? `${notes} ${notes === 1 ? "note" : "notes"}` : "",
   ].filter(Boolean);
-  return counted.join(", ") || "Worked on it";
+  const said = counted.join(", ") || "Worked on it";
+  if (failed === 0) return said;
+  return (
+    <>
+      {said} · <span className="text-rose-600 dark:text-rose-400">{failed} failed</span>
+    </>
+  );
+}
+
+/**
+ * What a tool was asked for and what came back.
+ *
+ * Both were already in the transcript and neither was rendered anywhere — the run expanded to a
+ * list of one-line labels, so "it failed" was the end of what anyone could find out. This is the
+ * third level of disclosure: prose, then the run, then the payload. Nobody reaches it by accident.
+ */
+function ToolDetail({ part }: { readonly part: Extract<BecodePart, { type: "tool" }> }) {
+  const failed = part.state === "error";
+  return (
+    <div className="mt-1 mb-1.5 ml-6.5 space-y-3 rounded-lg bg-muted/60 p-3">
+      <ToolField label="Called with" value={stringify(part.input) || "no arguments"} />
+      <ToolField
+        label={failed ? "Failed with" : "Returned"}
+        tone={failed ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}
+        value={part.output ?? (part.state === "running" ? "Still running…" : "No result recorded.")}
+      />
+    </div>
+  );
+}
+
+function ToolField({
+  label,
+  tone = "text-muted-foreground",
+  value,
+}: {
+  readonly label: string;
+  readonly tone?: string;
+  readonly value: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        {label}
+      </div>
+      {/* No height cap and no scroller of its own: an overlay scrollbar is invisible at rest, so
+          a clipped payload reads as a complete one — the same trap as the run viewport above.
+          Output is already bounded at 2000 chars upstream, and an unbounded input is a Write's
+          own content, which is exactly what someone opening this row came to read. */}
+      <pre className={`whitespace-pre-wrap break-words font-mono text-xs leading-relaxed ${tone}`}>
+        {value}
+      </pre>
+    </div>
+  );
 }
 
 function AgentMessagePart({

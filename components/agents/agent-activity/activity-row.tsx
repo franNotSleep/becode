@@ -1,9 +1,9 @@
 import {
   Check,
+  ChevronDown,
   Circle,
   FileText,
   Globe2,
-  ImageIcon,
   MessageSquare,
   PencilLine,
   Search,
@@ -208,13 +208,15 @@ function TraceIcon({ kind }: { kind: AgentActivityTrace["kind"] }) {
   if (kind === "message") return <MessageSquare className="size-4" />;
   if (kind === "write") return <PencilLine className="size-4" />;
   if (kind === "run") return <SquareTerminal className="size-4" />;
-  if (kind === "read") return <ImageIcon className="size-4" />;
+  if (kind === "read") return <FileText className="size-4" />;
   return <Wrench className="size-4" />;
 }
 
+const TRACE_ROW = "grid min-h-8 items-center gap-2.5 rounded-md px-1.5 py-0.5";
+
 function TraceRow({ item }: { item: AgentActivityTrace }) {
-  return (
-    <div className="grid min-h-8 grid-cols-[1rem_auto_minmax(0,1fr)] items-center gap-2.5 rounded-md px-1.5 py-0.5">
+  const head = (
+    <>
       <span
         aria-hidden="true"
         className="grid size-4 place-items-center text-muted-foreground/70"
@@ -229,7 +231,38 @@ function TraceRow({ item }: { item: AgentActivityTrace }) {
       ) : (
         <span />
       )}
-    </div>
+    </>
+  );
+
+  if (!item.body) {
+    return (
+      <div className={cn(TRACE_ROW, "grid-cols-[1rem_auto_minmax(0,1fr)]")}>
+        {head}
+      </div>
+    );
+  }
+
+  // Local fork of beui's row: a trace carrying a body opens in place. `<details>` rather than
+  // state, so the row is keyboard-operable and findable by the browser's own in-page search
+  // even while collapsed — which is the whole point when someone is looking for an error.
+  return (
+    <details className="group/trace">
+      <summary
+        className={cn(
+          TRACE_ROW,
+          "grid-cols-[1rem_auto_minmax(0,1fr)_auto] cursor-pointer list-none outline-none",
+          "hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring",
+          "[&::-webkit-details-marker]:hidden",
+        )}
+      >
+        {head}
+        <ChevronDown
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-muted-foreground/50 transition-transform group-open/trace:rotate-180"
+        />
+      </summary>
+      {item.body}
+    </details>
   );
 }
 

@@ -53,7 +53,7 @@ export function toolResultEvents(content: unknown, hidden: Set<string>): AgentEv
       type: "tool-result",
       id: String(block.tool_use_id),
       ok: block.is_error !== true,
-      text: flatten(block.content).slice(0, 2000),
+      text: cap(flatten(block.content)),
     });
   }
   return events;
@@ -144,6 +144,18 @@ export function summarize(name: string, input: unknown): string {
     }
   }
   return tool;
+}
+
+/**
+ * Tool output is capped before it is streamed and before it is stored — a `Read` of a large file
+ * would otherwise sit in sqlite twice over. The cut is *named* rather than silent: a truncated
+ * stack trace that looks complete is worse for whoever is debugging than no output at all.
+ */
+const RESULT_LIMIT = 2000;
+
+function cap(text: string): string {
+  if (text.length <= RESULT_LIMIT) return text;
+  return `${text.slice(0, RESULT_LIMIT)}\n\n… ${text.length - RESULT_LIMIT} more characters, not kept.`;
 }
 
 function flatten(content: unknown): string {
