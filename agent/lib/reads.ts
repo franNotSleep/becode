@@ -5,6 +5,8 @@
  * and "the model did not try" is not evidence that it cannot. `agent/lib/reads.check.ts` drives
  * every branch directly.
  */
+import path from "node:path";
+
 import { resolveInWorktree } from "./task.ts";
 
 export type ReadDecision = { allow: true } | { allow: false; message: string };
@@ -24,6 +26,13 @@ export function canRead(
   chat: { task?: { worktree: string } | null; discoveryRoot?: string },
   toolName: string,
   target: unknown,
+  /**
+   * Where the CLI will resolve a relative path — the turn's working directory. It is the root on
+   * every turn after `start_task`, which is why it defaults to one. On the `start_task` turn it is
+   * the source checkout instead, and a relative path waved through as worktree-relative would be
+   * read out of the person's real branch.
+   */
+  cwd?: string,
 ): ReadDecision {
   const worktree = chat.task?.worktree;
   const root = worktree ?? chat.discoveryRoot;
@@ -43,21 +52,27 @@ export function canRead(
     };
   }
 
-  if (typeof target !== "string" || target.length === 0) return { allow: true };
+  // No path at all is `Glob`/`Grep` searching the working directory, which is exactly the case a
+  // path rule used to miss: on a `start_task` turn that is the person's checkout, and Grep prints
+  // matching lines. Resolving "" against cwd puts it through the same check as everything else.
+  const asked = typeof target === "string" ? target : "";
 
   try {
-    resolveInWorktree(root, target);
+    resolveInWorktree(root, path.resolve(cwd ?? root, asked));
   } catch {
-    return { allow: false, message: `Only files inside ${root} can be read.` };
+    return {
+      allow: false,
+      message: `Only files inside ${root} can be read — use an absolute path under it.`,
+    };
   }
 
   // Discovery is reading the person's real checkout — live keys and all. `createWorktree` copies
   // the real env files into every worktree anyway, so a boot command never needs the values.
-  if (!worktree && SECRET_ENV.test(target)) {
+  if (!worktree && SECRET_ENV.test(asked)) {
     return {
       allow: false,
       message:
-        `${target} holds live secrets and is not readable. Read .env.example for the variable ` +
+        `${asked} holds live secrets and is not readable. Read .env.example for the variable ` +
         `names; the real env file is copied into every worktree automatically, so a boot command ` +
         `must never carry values inline.`,
     };

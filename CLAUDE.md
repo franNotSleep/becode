@@ -197,6 +197,9 @@ The rules live in `agent/lib/reads.ts`, not inline in `canUseTool`, so `npm run 
 drive every branch. Asking the agent to read a `.env` proves nothing — it declines conversationally
 before the gate is ever consulted, and a prompt is not a boundary.
 
+`canRead` takes the turn's **cwd** as well as the path, because the model's path is relative more
+often than not and the two ends have to agree on what it means. See the section below.
+
 `propose_project` returns a draft `Project`; the person approves it through the same awaited
 promise gate 3 uses (`askPerson` in `session.ts`), and `addProject` writes the row.
 
@@ -231,6 +234,63 @@ as the font rule documented beside it, so the ring carries the error and the bor
 **The agent still cannot edit a recipe** — no tool reaches `saveProject`. It has `Bash` now, so
 `sqlite3 ~/.becode/becode.db` would work; `agent/instructions.md` asks it not to, and that is a
 request, not a boundary. The same sentence as the one at the top of this file.
+
+## A relative path means whatever `cwd` says it means
+
+`cwd` is fixed when a turn's `query` starts, and there is no worktree yet on the turn that calls
+`start_task` — so on that turn, and on any chat whose task is null, `cwd` is the target repo's
+**source checkout**: the person's real branch. Two things went wrong there, and both are gates
+disagreeing with the CLI rather than gates being absent.
+
+**The gate resolved paths against the worktree; the CLI resolves them against `cwd`.**
+`resolveInWorktree` is `path.resolve(worktree, target)`, so `Edit src/app/page.tsx` was approved as
+worktree-relative and then applied to `staging`. Both call sites now resolve against `turnCwd`
+first (`agent/sdk/session.ts`), which is the *same* value on every turn after `start_task` — so
+nothing changes except the turn that was wrong. `canRead` gained the parameter for the same reason,
+and folded away its "no path at all" early return while it was there: that case is `Glob`/`Grep`
+searching the working directory, which on that turn is the person's checkout, and `Grep` prints
+matching lines.
+
+**`Bash` just ran there.** It takes a command, not a path, so no gate reached it, and a whole turn
+went into running `git`, `ls` and `pwd` against the wrong repo. `inWorktree` (`agent/lib/task.ts`)
+now prefixes the command with a `cd` when `turnCwd` is not the worktree. `cd` goes on its own line
+rather than `cd … && `, or a command whose first line is a comment becomes a syntax error, and the
+path is single-quoted because a home directory may contain a `$`. The transcript is unaffected:
+`summarize` renders the model's original `tool_use` block, which the SDK delivers before the
+permission request that rewrites it.
+
+**That prefix is a `PreToolUse` hook, and it has to be** — see the fact below. `canUseTool` is not
+shown every `Bash` call, and the ones it is not shown are precisely `pwd`, `ls` and `git status`:
+the whole of that wasted turn. The hook is registered with `matcher: "Bash"` and returns
+`hookSpecificOutput.updatedInput`, which is honoured for a built-in tool.
+
+Pre-creating a worktree so `cwd` is never a live checkout was the obvious alternative and does not
+work: `open_pull_request` sets the task back to `null`, so a second task in the same chat cuts a
+second worktree mid-turn and is wrong again. It also cuts a branch before gate 1 has judged the
+request.
+
+## Stdin is the channel permissions are answered on
+
+`Tool permission request failed: AbortError: Stream closed` is the CLI refusing to *ask*. Its
+`sendRequest` throws when its stdin has already hit EOF, and it turns that into a denial handed to
+the model as an ordinary tool result — so the turn does not fail, it limps, and the model theorises
+about sandboxes it does not have.
+
+becode closed that stdin itself, in both of the shapes it used. A plain-string `prompt` sets the
+SDK's `isSingleUserTurn`, which closes stdin on the first `result`; a generator that returns lets
+`streamInput` fall through to `endInput()`. Anything the CLI is still running at that moment — a
+background `Bash`, a subagent, a parked `AskUserQuestion` — loses its round trip.
+
+So `oneUserMessage` is now the only form, empty `blocks` and all, and it **parks after its one
+message** on a promise `run`'s `finally` resolves. Two consequences worth knowing:
+
+- **The loop must `break` on `result`.** With stdin open the CLI does not exit on its own, and
+  `for await` would never end. Breaking runs the SDK's own cleanup — transport closed, stdin
+  ended, subprocess reaped — which is the teardown EOF used to trigger, just after the turn rather
+  than during it.
+- **`tagSession` has slightly less runway.** The old path ended with a hard `waitForExit`; cleanup
+  races it against 2s. It is already `.catch(() => undefined)`, so if chats stop appearing in the
+  sidebar, this is where to look.
 
 ## Chats, history, and two at once
 
@@ -368,12 +428,13 @@ holding :3002. Apps now run `detached: true` — their own process group — and
 without it a becode that stops leaves a dev server on the port that the next run cannot see, cannot
 kill, and cannot boot past. Services are left alone; they are shared and every task needs them.
 
-**A port becode did not take is a question, not an error.** If a port is held by a process whose
-**group** is outside `ownedPids()` — matching on pid alone flags becode's own apps, since it tracks
-the shell and the listener is that shell's grandchild — a leftover from a becode that crashed, or
-the person's own `next dev` —
-`canUseTool` names the processes and asks before stopping them (`agent/lib/ports.ts`, `check:ports`).
-Killing blind is not becode's call; retrying forever is what it used to do instead.
+**Every start is kill-then-start.** `clearPort` in `bootProject` releases whatever is listening on
+a declared port before spawning anything on it (`agent/lib/ports.ts`, `check:ports`). By then
+becode's own servers for that port are already stopped — `takeAppPorts`, and the dead sweep above
+it — so what is left is a leftover from a becode that crashed or a stray `next dev`, and EADDRINUSE
+is a dead end the person cannot act on. `canUseTool` used to name the processes and ask; the answer
+was always yes, so the question is gone and both entry points (`run_project` and the Start button)
+get the same treatment because both route through `bootProject`.
 
 **Worktrees are cheap; the ports are the lock.** Two chats can hold two worktrees, edit, diff and
 open PRs independently. Only `run_project` is contended, because the apps sit on fixed ports the
@@ -412,11 +473,17 @@ stays testable while unenforced.
 The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
 checkout.
 
-**`disallowedTools` is now empty, and that is a deployment choice like `judge: false`.** `Bash`,
-`Task`/`Agent`, `WebSearch`, `WebFetch` and `AskUserQuestion` were removed from the request
-outright — the model never saw them. The operator asked for the whole harness, so they are back,
-and `FULL_ACCESS` in `session.ts` allows them at the gate, because `canUseTool` defaults to deny
-and un-removing a tool alone would leave it refused.
+**`disallowedTools` is empty of anything the operator asked for, and that is a deployment choice
+like `judge: false`.** `Bash`, `Task`/`Agent`, `WebSearch`, `WebFetch` and `AskUserQuestion` were
+removed from the request outright — the model never saw them. The operator asked for the whole
+harness, so they are back, and `FULL_ACCESS` in `session.ts` allows them at the gate, because
+`canUseTool` defaults to deny and un-removing a tool alone would leave it refused.
+
+Two entries remain, and they are not policy: **`EnterWorktree` and `ExitWorktree` manage worktrees
+becode owns.** `EnterWorktree` cuts a tree becode does not track (and moves the session's `cwd`
+into it); `ExitWorktree` can delete one it does, branch included. Default-deny already refused
+both — but a denied tool is still a *visible* tool, and the model spent four calls of a real turn
+discovering that, then concluded from the refusals that it had been sandboxed.
 
 Be clear-eyed about what that costs, because it is the invariant at the top of this file:
 
@@ -424,6 +491,11 @@ Be clear-eyed about what that costs, because it is the invariant at the top of t
   string. Inside a shell the worktree boundary and "a pull request or nothing" are what
   `agent/instructions.md` asks for, not what the tool layer enforces. A one-line scoped rule —
   `disallowedTools: ["Bash(git push:*)"]` — buys the second one back without giving up the shell.
+  It is also not fully *visible* to `canUseTool`: the CLI auto-approves read-only commands and
+  those never reach the callback at all. What does happen is a `PreToolUse` hook putting the
+  shell's **working directory** back — on a turn where `cwd` is not the worktree it rewrites the
+  command through `inWorktree` (`agent/lib/task.ts`) so it opens there. That is the default
+  directory, not a boundary: the next `cd` undoes it.
 - **`Task` does not open a second permission surface.** `canUseTool` receives `agentID` for
   subagent calls, and a live turn confirms it: a subagent's `Bash` shows up as a gated tool row
   like any other. The `Agent` call *itself* appears not to reach the callback, but everything it
@@ -767,6 +839,12 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 
 - **Auto-approved tools never reach `canUseTool`.** This is the single most important fact here —
   see the warning under How the constraint works.
+- **`Bash` is auto-approved per *command*, and read-only ones never reach `canUseTool` either.**
+  Verified on a live turn with a callback that rewrote every command it saw: `touch` arrived,
+  `pwd` and `git status --short` did not — they ran with no callback invocation at all. So
+  `canUseTool` is authoritative for `Edit`, `Write` and the becode tools, and **not** for the
+  shell. Nothing in `disallowedTools` or `permissionMode` was set; this is the CLI's own default.
+  Anything that must see every command belongs in a `PreToolUse` hook.
 - **`disallowedTools: ["Bash"]`** removes the tool definition entirely; a scoped rule like
   `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode. This list is
   empty today — see the note under How the constraint works — so the second half, `FULL_ACCESS` in
@@ -780,9 +858,11 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   way to hand a tool data it could not have had.
 - **`canUseTool` is async** and receives `toolUseID`, which is what makes an awaited human
   approval possible without inventing a protocol.
-- **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Not
-  used today — `canUseTool` is authoritative while no allow rules exist — but it is the upgrade
-  path if that ever stops being true.
+- **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Used
+  for one thing: putting `Bash`'s working directory back inside the worktree, because it is the
+  only surface that sees every command (see the fact above). It also fires *ahead* of
+  `canUseTool`, which then sees the rewritten input — confirmed on the same live turn. Denying
+  from a hook is the upgrade path if `canUseTool` ever stops being enough for the other tools.
 - **Plugins load by local path** (`{type:"local", path}`) and the manifest is optional; skills are
   auto-discovered from `<plugin>/skills/<name>/SKILL.md` and namespaced `<plugin>:<skill>`.
 - **`resume`** continues a session by id; the id arrives on the `system` init message.
@@ -803,9 +883,9 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   fixing that in the target repo first.
 - **`next dev` HMR forgets the children.** Editing `tools.ts` re-evaluates the module, so `live`
   empties while the dev servers keep running. The exit handler still reaps them (the old module's
-  closure fires), and the port gate catches the duplicates, so it degrades rather than breaks — but
+  closure fires), and `clearPort` takes the duplicates down, so it degrades rather than breaks — but
   the bar goes blank mid-session. Not a concern under `npm start`.
 - **A restart still orphans the dev servers.** The `Chat` rows survive it now, but `live` and
   `appOwner` in `tools.ts` do not, so the apps from before the restart keep their ports with
-  nothing tracking them. The port gate catches it and asks before killing them, which is the
-  behaviour — just not a pleasant one.
+  nothing tracking them. `clearPort` kills them on the next boot, so it self-heals — becode just
+  never learns they were its own.

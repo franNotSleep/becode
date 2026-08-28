@@ -12,12 +12,10 @@ import { turnAttachments } from "../lib/attachments.ts";
 import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { appendEvents, findProject, moveEvents } from "../lib/db.ts";
-import { projectPorts } from "../lib/projects.ts";
-import { holders, release } from "../lib/ports.ts";
 import { canRead } from "../lib/reads.ts";
-import { type Chat, chatFor, rememberChat, resolveInWorktree } from "../lib/task.ts";
+import { type Chat, chatFor, inWorktree, rememberChat, resolveInWorktree } from "../lib/task.ts";
 import { judgeChange } from "./judge.ts";
-import { becodeTools, ownedPids, TOOL } from "./tools.ts";
+import { becodeTools, TOOL } from "./tools.ts";
 import { assistantEvents, toolResultEvents } from "./transcript.ts";
 
 const MAX_TURNS = Number(process.env.BECODE_MAX_TURNS ?? 120);
@@ -263,6 +261,20 @@ export async function run({
   if (projectId) chat.projectId = projectId;
   if (discoveryPath) chat.discoveryRoot = path.resolve(discoveryPath);
 
+  /**
+   * Where the CLI will resolve every relative path this turn.
+   *
+   * Never becode's own directory. It is fixed when the query starts, so on the turn that calls
+   * `start_task` there is no worktree yet and this is the target repo's *source checkout* — the
+   * person's real branch. The gates below have to resolve a path exactly the way the CLI will, or
+   * they approve one file and it edits another: `Edit src/app/page.tsx` reads as worktree-relative
+   * here and lands on `staging` there. WORKTREE_ROOT is inert — start_task returns the path to use.
+   */
+  const turnCwd =
+    chat.task?.worktree ??
+    chat.discoveryRoot ??
+    (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT);
+
   // Gate 1 reads these from here: the ask may live in the screenshot rather than the typed text.
   turnAttachments.set(attachments);
 
@@ -331,43 +343,6 @@ export async function run({
         : { behavior: "deny", message: "The user did not add this project." };
     }
 
-    // A busy app port is a dead end otherwise: run_project fails with EADDRINUSE and the agent
-    // retries forever, because the only thing it can stop is what this becode started. Whatever
-    // else is there may be something the person wants, so becode asks rather than killing.
-    if (toolName === TOOL.runProject) {
-      const blocked = await foreignHolders(chat);
-      if (blocked.length > 0) {
-        const list = blocked
-          .map((b) => `:${b.port} — ${b.holders.map((h) => `${h.command} (pid ${h.pid})`).join(", ")}`)
-          .join("\n");
-        const approved = await askPerson(toolUseID, emit, signal, {
-          tool: "run_project",
-          title: `Free port${blocked.length > 1 ? "s" : ""} ${blocked.map((b) => b.port).join(", ")}`,
-          parameters: { holding: list },
-          reason:
-            `These ports are taken by something becode did not start — most likely a leftover ` +
-            `from an earlier run. Stop them so the app can boot?\n${list}`,
-        });
-        if (!approved) {
-          return {
-            behavior: "deny",
-            message:
-              `The user left these running, so the app cannot boot:\n${list}\n` +
-              `Tell them, and do not retry run_project until they have freed the port.`,
-          };
-        }
-        for (const { port, holders: found } of blocked) {
-          if (!(await release(port, found.map((h) => h.pid)))) {
-            return {
-              behavior: "deny",
-              message: `Port ${port} is still busy after stopping what was there. Tell the user.`,
-            };
-          }
-        }
-      }
-      return { behavior: "allow", updatedInput: input };
-    }
-
     /**
      * The agent's own questions, answered by the person rather than by the CLI.
      *
@@ -399,9 +374,15 @@ export async function run({
       }
       const target = String(input.file_path ?? input.notebook_path ?? "");
       try {
-        resolveInWorktree(current.worktree, target);
-      } catch (e) {
-        return { behavior: "deny", message: (e as Error).message };
+        // Resolved against the turn's cwd first, because that is what the CLI does with it.
+        resolveInWorktree(current.worktree, path.resolve(turnCwd, target));
+      } catch {
+        return {
+          behavior: "deny",
+          message:
+            `${target} is outside the task worktree. Use the absolute path under ` +
+            `${current.worktree} that start_task returned.`,
+        };
       }
       const verdict = await judgeChange(describeEdit(input, current.worktree));
       return verdict.allowed
@@ -418,7 +399,7 @@ export async function run({
     if (toolName === "TodoWrite") return { behavior: "allow", updatedInput: input };
 
     if (READ_TOOLS.has(toolName)) {
-      const verdict = canRead(chat, toolName, input.file_path ?? input.path);
+      const verdict = canRead(chat, toolName, input.file_path ?? input.path, turnCwd);
       return verdict.allow
         ? { behavior: "allow", updatedInput: input }
         : { behavior: "deny", message: verdict.message };
@@ -437,6 +418,12 @@ export async function run({
     return { behavior: "deny", message: `${toolName} is not available to becode.` };
   };
 
+  /** Resolved in `finally`, which is what lets the parked prompt generator above finish. */
+  let closeInput = () => {};
+  const inputOpen = new Promise<void>((resolve) => {
+    closeInput = resolve;
+  });
+
   let lastSessionId: string | undefined;
   /** A session id reported this run that still needs the `becode` tag. See the tagging note below. */
   let untagged: string | undefined;
@@ -445,27 +432,24 @@ export async function run({
 
   try {
     const response = query({
-      // A plain string when there is nothing attached — the path that has always worked. Blocks
-      // only exist in the streaming-input form, so that form is used only when there are some.
-      prompt: attachments.length === 0 ? message : oneUserMessage(attachments, message),
+      prompt: oneUserMessage(attachments, message, inputOpen),
       options: {
-        // Never becode's own directory: cwd is fixed when the query starts, so on the turn that
-        // calls start_task there is no worktree yet, and anything relative would resolve into
-        // becode's source. WORKTREE_ROOT is inert — start_task returns the absolute path to use.
-        cwd:
-          chat.task?.worktree ??
-          chat.discoveryRoot ??
-          (chat.projectId ? findProject(chat.projectId).path : WORKTREE_ROOT),
+        cwd: turnCwd,
         systemPrompt: await systemPrompt(chat),
         mcpServers: { becode: becodeTools(chat) },
         // cwd is the target worktree, so this must be absolute: becode's own skills live here,
         // not in the repo being edited. `agent/` is the plugin root — skills/ is auto-discovered.
         plugins: [{ type: "local", path: path.join(BECODE_ROOT, "agent") }],
-        // No allowedTools, no permissionMode — see the note above. Empty by choice: the operator
-        // wants the whole harness. Narrowing it again is one entry here — a scoped rule like
-        // `Bash(git push:*)` blocks only what it names — and `FULL_ACCESS` above is the matching
-        // half, since a tool has to pass both to run.
-        disallowedTools: [],
+        // No allowedTools, no permissionMode — see the note above. Empty of anything the operator
+        // asked for: they want the whole harness. Narrowing it further is one entry here — a
+        // scoped rule like `Bash(git push:*)` blocks only what it names — and `FULL_ACCESS` above
+        // is the matching half, since a tool has to pass both to run.
+        //
+        // The two exceptions manage worktrees becode owns: `EnterWorktree` cuts one becode does
+        // not track, and `ExitWorktree` can delete one it does. `canUseTool` refused both anyway
+        // by defaulting to deny — but the model could still see them, and spent four calls of a
+        // real turn finding out.
+        disallowedTools: ["EnterWorktree", "ExitWorktree"],
         // Load no settings files. A `permissions.allow` rule in the *target repo's*
         // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
         // and the target repo is not becode's trust boundary.
@@ -475,6 +459,43 @@ export async function run({
         // becode plugin's four skills should be routable. Plugins are unaffected by this.
         settings: { disableBundledSkills: true },
         canUseTool,
+        /**
+         * The shell starts where the work is.
+         *
+         * A hook, not `canUseTool`, because **`canUseTool` does not see every `Bash` call.** The
+         * CLI auto-approves read-only commands on its own, and an auto-approved call never reaches
+         * the callback — verified on a live turn: `pwd` and `git status` bypassed it entirely
+         * while `touch` did not. Those are exactly the commands the agent ran against the person's
+         * real branch for a whole turn before deciding it had been sandboxed. `PreToolUse` fires
+         * for all three, ahead of every other step.
+         *
+         * ponytail: this fixes the *default directory*, not the boundary. A command is a string,
+         * so nothing here stops the model cd-ing back out; `disallowedTools` is that lever.
+         */
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              hooks: [
+                async (hook) => {
+                  const task = chat.task;
+                  if (!task || turnCwd === task.worktree) return { continue: true };
+                  const input = (hook as { tool_input?: Record<string, unknown> }).tool_input ?? {};
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      updatedInput: {
+                        ...input,
+                        command: inWorktree(String(input.command ?? ""), task.worktree),
+                      },
+                    },
+                  };
+                },
+              ],
+            },
+          ],
+        },
         maxTurns: MAX_TURNS,
         resume: sessionId,
         abortController: toController(signal),
@@ -482,6 +503,12 @@ export async function run({
     });
 
     for await (const sdkMessage of response) {
+      // Nothing else ends this loop any more: stdin is held open, so the CLI does not exit on its
+      // own. Breaking runs the SDK's cleanup — the transport closes, stdin ends, the subprocess
+      // is reaped — which is the same teardown the old EOF triggered, just after the turn instead
+      // of during it.
+      if (sdkMessage.type === "result") break;
+
       // Every system message carries session_id, not just the init one — emit on change only.
       if (sdkMessage.type === "system" && "session_id" in sdkMessage) {
         const id = String(sdkMessage.session_id);
@@ -516,6 +543,9 @@ export async function run({
       message: signal.aborted ? "You stopped this turn." : (e as Error).message,
     });
   } finally {
+    // Lets the prompt generator return. By now the SDK has already closed the transport, so this
+    // releases a promise rather than ending anything.
+    closeInput();
     // How the sidebar tells becode's chats apart from the terminal sessions living in the same
     // repo — a chat that never starts a task sits on the project's own branch and is otherwise
     // indistinguishable. Tagged at the *end*: on the init message the CLI has not written the
@@ -593,43 +623,33 @@ async function gateOpenPullRequest(
 }
 
 /**
- * The streaming-input form of `prompt`, used for exactly one message.
+ * The turn's one user message — and then the generator parks, deliberately.
  *
- * `query` takes `string | AsyncIterable<SDKUserMessage>`, and only the second carries content
- * blocks. The generator yields once and returns, so the turn runs and ends as it does for a
- * string. `SDKUserMessage` requires only these three fields; `session_id` is set by the CLI.
+ * This is what keeps the CLI's stdin open, and stdin is the channel `canUseTool` answers on.
+ * Closed early, the CLI stops even *asking*: it refuses the permission request outright and hands
+ * the model `Tool permission request failed: AbortError: Stream closed` as if the tool had been
+ * denied. The turn then limps on with a model inventing reasons it is sandboxed.
+ *
+ * Both of the shapes becode used before closed it at the first `result` message — a plain string
+ * sets the SDK's `isSingleUserTurn`, and a generator that returns lets `streamInput` reach
+ * `endInput()`. So the string form is gone: `blocks` is simply empty when nothing is attached.
+ * Anything the CLI is still running at that point — a background `Bash`, a subagent, a parked
+ * question — is exactly what used to lose its round trip.
+ *
+ * `until` is resolved by `run`'s `finally`. Nothing else ends this generator, and nothing else
+ * needs to: the loop breaks on `result`, and the SDK's own cleanup closes the transport.
  */
 async function* oneUserMessage(
   blocks: ContentBlockParam[],
   text: string,
+  until: Promise<void>,
 ): AsyncGenerator<SDKUserMessage> {
   yield {
     type: "user",
     message: { role: "user", content: [...blocks, { type: "text", text }] },
     parent_tool_use_id: null,
   };
-}
-
-/**
- * Ports held by something this becode did not start — apps, and services that declare one.
- *
- * Its own children are not reported: `run_project` already hands the ports over between chats.
- * What is left is a leftover from a previous becode, or the person's own dev server.
- */
-async function foreignHolders(
-  chat: Chat,
-): Promise<{ port: number; holders: Awaited<ReturnType<typeof holders>> }[]> {
-  if (!chat.task) return [];
-  const ours = new Set(ownedPids());
-  const found = await Promise.all(
-    projectPorts(findProject(chat.task.projectId)).map(async (port) => ({
-      port,
-      // By process group, not pid: becode tracks the shell it spawned, and the listener is that
-      // shell's grandchild. Matching on pid alone had becode offering to kill its own apps.
-      holders: (await holders(port)).filter((h) => !ours.has(h.pid) && !ours.has(h.pgid)),
-    })),
-  );
-  return found.filter((entry) => entry.holders.length > 0);
+  await until;
 }
 
 /**

@@ -73,7 +73,10 @@ answer at all, in which case ask again in prose rather than choosing for them. A
 non-engineer can choose between: "Stays visible while scrolling", not "position: sticky".
 
 On the turn where you call `start_task`, the working directory was fixed before the worktree
-existed, so use the absolute path `start_task` returns. From the next turn on, relative paths work.
+existed, so **use the absolute path `start_task` returns** for every `Read`, `Glob`, `Edit` and
+`Write` on that turn. A relative one is refused, and the refusal names the path to use. `Bash` is
+the exception — it is put into the worktree for you, so `pwd` on that turn reports the worktree
+rather than the directory the shell started in. From the next turn on, relative paths work.
 
 ## Attachments
 

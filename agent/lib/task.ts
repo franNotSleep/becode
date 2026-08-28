@@ -136,6 +136,22 @@ export function activeTask(chat: Chat): { task: NonNullable<Task>; project: Proj
  * Trust boundary: the model supplies this path. Reject anything that escapes the worktree —
  * `..` and absolute paths never reach the filesystem.
  */
+/**
+ * Run a command with the worktree as its working directory.
+ *
+ * `cwd` is fixed when a turn's query starts, so on the turn that calls `start_task` the shell
+ * opens in the target repo's source checkout — the person's real branch. This puts it back.
+ *
+ * `cd` on its own line rather than `cd … && `: a command whose first line is a comment would
+ * make `&&` a syntax error. Single-quoted, because a home directory may contain a `$`.
+ *
+ * ponytail: the default directory, not a boundary. A command is a string and `resolveInWorktree`
+ * takes a path, so nothing here stops the model cd-ing straight back out.
+ */
+export function inWorktree(command: string, worktree: string): string {
+  return `cd '${worktree.replaceAll("'", `'\\''`)}' || exit 1\n${command}`;
+}
+
 export function resolveInWorktree(worktree: string, relPath: string): string {
   const full = path.resolve(worktree, relPath);
   const root = path.resolve(worktree);

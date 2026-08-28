@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { canRead } from "./reads.ts";
+import { inWorktree } from "./task.ts";
 
 const deny = (d: ReturnType<typeof canRead>) => (d.allow ? "" : d.message);
 
@@ -42,5 +43,18 @@ assert.match(deny(canRead(discovering, "Read", "/etc/passwd")), /Only files insi
 const both = { ...discovering, task: working.task };
 assert.match(deny(canRead(both, "Read", "/Users/x/Dev/scraper/package.json")), /Only files inside/);
 assert.ok(canRead(both, "Grep", undefined).allow);
+
+// The start_task turn: cwd is still the source checkout, so a relative path is the person's own
+// branch and not the worktree at all. The absolute path start_task returned is the way through.
+const source = "/Users/x/Dev/tix/web";
+assert.match(deny(canRead(working, "Read", "src/app/page.tsx", source)), /Only files inside/);
+assert.ok(canRead(working, "Read", "/tmp/wt/tix/roomier-card/src/app/page.tsx", source).allow);
+// Glob and Grep with no path search the working directory — which is that same checkout.
+assert.match(deny(canRead(working, "Grep", undefined, source)), /Only files inside/);
+
+// The shell is put back in the worktree. `cd` on its own line, or a command whose first line is a
+// comment would swallow it; single-quotes escaped, because a home directory may hold one.
+assert.equal(inWorktree("# note\nls", "/tmp/wt/a"), "cd '/tmp/wt/a' || exit 1\n# note\nls");
+assert.match(inWorktree("ls", "/tmp/it's/a"), /^cd '\/tmp\/it'\\''s\/a' \|\| exit 1\n/);
 
 console.log("reads: ok");

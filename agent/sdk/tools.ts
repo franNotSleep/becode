@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { addProject, allProjects, findProject } from "../lib/db.ts";
 import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts";
-import { isListening } from "../lib/ports.ts";
+import { holders, isListening, release } from "../lib/ports.ts";
 import { appUrls, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { impeccableContext, type ImpeccableState } from "../lib/impeccable.ts";
@@ -408,9 +408,19 @@ function stop(child: ChildProcess): void {
   }
 }
 
-/** The pids becode started and still tracks, so a busy port can be told apart from a leftover. */
-export function ownedPids(): number[] {
-  return [...live.values()].map((entry) => entry.child.pid).filter((pid): pid is number => !!pid);
+/**
+ * Nothing else may be sitting on a port becode is about to bind.
+ *
+ * Every start is kill-then-start. By the time this runs, becode's own servers for this port have
+ * already been stopped (`takeAppPorts`, and the dead sweep in `bootProject`), so whatever is left
+ * is a leftover from a becode that crashed or a stray dev server — and either way EADDRINUSE is a
+ * dead end the person cannot act on. becode used to name the processes and ask; the answer was
+ * always yes.
+ */
+async function clearPort(port: number | undefined): Promise<void> {
+  if (port === undefined) return;
+  const found = await holders(port);
+  if (found.length > 0) await release(port, found.map((h) => h.pid));
 }
 
 /**
@@ -556,6 +566,7 @@ export async function bootProject(
     // A declared port is also an address. Without this the bar showed the backend as "up" with
     // nothing to click — the one server whose logs you actually want is the one you cannot open.
     const url = service.port ? `http://localhost:${service.port}` : undefined;
+    await clearPort(service.port);
     start(service.name, project.path, service.command, {}, url, service.port, false);
     started.push(service.name);
   }
@@ -566,6 +577,7 @@ export async function bootProject(
   for (const [index, app] of project.apps.entries()) {
     const { port, url } = urls[index];
     if (live.has(app.name)) continue;
+    await clearPort(port);
     start(app.name, worktree, app.command.replaceAll("$PORT", String(port)), { PORT: String(port) }, url, port, true);
     started.push(app.name);
   }
@@ -588,7 +600,14 @@ export async function bootProject(
 
   const dead = report.filter((s) => !s.running);
   if (dead.some((s) => project.apps.some((a) => a.name === s.name))) {
-    throw new Error(`Some apps failed to start:\n${JSON.stringify(dead, null, 2)}`);
+    // First line is a sentence, the rest is the evidence. Two audiences read this: the agent, which
+    // wants the logs, and the person who pressed Start, whose window shows only the first line —
+    // a JSON dump with escaped newlines is exactly the stack trace DESIGN.md forbids on a surface
+    // where someone has to decide something. The window renders the real output below it anyway.
+    const names = dead.map((s) => s.name).join(", ");
+    throw new Error(
+      `${names} did not start. Its output is below.\n${JSON.stringify(dead, null, 2)}`,
+    );
   }
 
   // A dead *service* does not throw — `docker compose up -d` exiting 0 is healthy — but it
