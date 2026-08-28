@@ -21,6 +21,14 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-skill: var(--skill);
+  /*
+   * Two shadows, and they are the whole vocabulary. `observe` marks the one surface in becode that
+   * is not chrome — the window holding the running target app. `overlay` is for things that
+   * genuinely float free of the layout. Anything else is flat: a hairline border and a tonal step.
+   * Neither reads against the dark background, which is deliberate; there the card step carries it.
+   */
+  --shadow-observe: 0 1px 2px oklch(0 0 0 / 0.04), 0 8px 24px -8px oklch(0 0 0 / 0.1);
+  --shadow-overlay: 0 8px 32px -8px oklch(0 0 0 / 0.18);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -80,8 +88,19 @@
   }
 }
 
-* {
-  border-color: var(--border);
+/*
+ * Layered, and that is the whole point — the same trap as the `font` rule below.
+ *
+ * Unlayered this outranked every `border-*` utility, so `border-border/60` and `border-destructive`
+ * alike resolved to a flat `--border`: no border in becode had ever rendered at the opacity it
+ * asked for, and an invalid field's red border came out grey. That is why `project-settings.tsx`
+ * carries the error on the ring instead, and why the fractional borders throughout the app looked
+ * like they did nothing. In `@layer base` a utility wins, which is what every caller already meant.
+ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
 
 html {

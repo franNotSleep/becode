@@ -92,7 +92,7 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | **A turn in flight, and who is watching it** | `agent/sdk/live.ts` |
 | HTTP surface | `app/api/agent/route.ts`, `approve/route.ts`, `status/route.ts`, `run/route.ts`, `stream/route.ts`, `stop/route.ts` |
 | CEO-facing UI | `app/_components/` (`agent-chat.tsx`, `use-becode-agent.ts`) |
-| Is it live, and at which URLs | `app/_components/live-status.tsx` ← `GET /api/agent/status` |
+| Is it live, at which URLs, and what it looks like | `app/_components/workshop-window.tsx` ← `GET /api/agent/status` |
 
 ## Booting the target project
 
@@ -406,7 +406,7 @@ before anyone looked. `GET /api/agent/logs?name=&from=` backs a 1s poll from the
 
 **Starting it is a button, not a request.** "Start the project" is not a change, so gate 1's judge
 refused it — correctly, and uselessly. `POST /api/agent/run` calls the same `bootProject`
-`run_project` does, from the header's Start/Stop button (`live-status.tsx`), with no judge: booting
+`run_project` does, from the Start/Stop button (`workshop-window.tsx`), with no judge: booting
 is not a product change and the person clicking it is the person the policy protects. Apps run in
 the chat's worktree when it has a task, the source checkout when it does not.
 

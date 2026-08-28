@@ -154,9 +154,6 @@ export function AgentActivity({
   const cappedHeight = Math.min(contentHeight, Math.max(0, maxHeight));
   const viewportHeight = working ? Math.max(0, maxHeight) : cappedHeight;
   const capped = contentHeight > maxHeight;
-  const streamOffset = working
-    ? Math.min(0, viewportHeight - contentHeight)
-    : 0;
 
   useLayoutEffect(() => {
     const node = contentRef.current;
@@ -170,6 +167,35 @@ export function AgentActivity({
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
+
+  /**
+   * LOCAL FIX (becode), not upstream beui. Re-running `shadcn add` will revert it.
+   *
+   * While `working`, the viewport was `overflow-y-hidden` and the list was translated up by
+   * `contentHeight - maxHeight` to keep its tail in view. That made every row above the last 208px
+   * rendered but unreachable: a tool that failed early scrolled out of the window and could not be
+   * read back until the turn ended. Watching what the agent is doing is most of what this pane is
+   * for, so it scrolls now, and follows the tail only while the reader is already at it — the same
+   * rule `message-scroller.tsx` applies to the transcript.
+   */
+  const following = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const node = viewportRef.current;
+    if (!node) return;
+    following.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 24;
+  }, []);
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node || !working || !following.current) return;
+    node.scrollTop = node.scrollHeight;
+  }, [items.length, contentHeight, working]);
+
+  // A new run starts at its tail, however the last one was left.
+  useEffect(() => {
+    if (working) following.current = true;
+  }, [working]);
 
   useEffect(() => {
     if (previousStatus.current === "working" && status === "complete") {
@@ -245,16 +271,15 @@ export function AgentActivity({
           ref={viewportRef}
           className={cn(
             "scrollbar-hide pr-1",
-            capped && expanded && !working ? "overflow-y-auto" : "overflow-y-hidden",
+            capped && expanded ? "overflow-y-auto" : "overflow-y-hidden",
           )}
+          onScroll={handleScroll}
           style={{ height: viewportHeight, maskImage, WebkitMaskImage: maskImage }}
         >
           <motion.div
             ref={contentRef}
             role="list"
             initial={false}
-            animate={{ y: streamOffset }}
-            transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
             className={cn("space-y-0.5 py-2", contentClassName)}
           >
             <AnimatePresence mode="popLayout">

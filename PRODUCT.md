@@ -28,26 +28,38 @@ they were not meant to touch.
 
 ## Positioning
 
-Four mechanisms, each of which a general coding agent does not have:
+Four mechanisms, each of which a general coding agent does not have. Two of them are switched off
+on this install; see the note below, and do not describe them as active.
 
 - **The policy is a real boundary, not a prompt.** One instance runs for one person in one role.
   That role's permissions are written in plain English in `roles/<role>.md`, and a separate small
   model rules on each case against that text — at the tool layer, where a refusal means the call
   never happens. The agent doing the work never gets to interpret the policy. A marketing manager
   literally cannot change pricing logic, however the request is phrased.
-- **It cannot reach production.** The only output path is a pull request against a non-default
-  branch. No direct commits to `main`, no force-push, no deploys.
+- **A human confirms everything that leaves the machine.** No change reaches a shared branch, and
+  no project is added, without someone clicking approve on a card describing what is about to
+  happen. This one is unconditional.
 - **They see it running first.** The target repo's own dev servers and dependencies boot in an
   isolated git worktree serving the branch being changed. Approval is looking at the app.
 - **A non-engineer never meets code.** No diffs, no file paths, no framework names in the answer.
 
-Taken together: a coding agent a company can hand to someone who is not allowed to break things,
-and be right about it.
+**What is switched off here.** `becode.config.ts` sets `judge: false`, so the role policy is not
+enforced on this install: this becode will implement a pricing, checkout or authentication change if
+asked. And `disallowedTools` is empty at the operator's request, so the agent has the full harness
+including `Bash` — which means "a pull request or nothing" is asked for in `agent/instructions.md`
+rather than enforced at the tool layer. Both are deployment choices, and both are one line to
+reverse. The mechanism itself is intact and tested (`npm run check:policy`, ten known allow/refuse
+cases, which ignores the flag deliberately).
+
+Taken together, and with the judge on: a coding agent a company can hand to someone who is not
+allowed to break things, and be right about it. That is the product's claim; today it is a claim
+about the design, not about this running install.
 
 ## Operating Context
 
 - Runs locally on the user's own machine — one Next.js process, `npm run dev`, `localhost:4000`.
-  No Docker, no container, no daemon, no hosted service.
+  No daemon and no hosted service. One container, and only one: MinIO on :9040, holding attachment
+  bytes. becode runs without it; attachments are the only thing that fails.
 - Authenticates with the user's Claude subscription token (`claude setup-token`), not an API key.
 - Each task gets its own git worktree, so two chats can hold two branches at once. Apps keep their
   native ports because the target repo's env files and CORS allowlists are already written for them.
@@ -60,11 +72,18 @@ and be right about it.
 
 ## Capabilities and Constraints
 
-- **Requests are judged three times**: the request before work starts, every individual write before
-  it reaches disk, and the real diff before a PR — the last of which also blocks on a human clicking
-  approve. A fourth, human-only confirmation guards adding a project.
-- **No shell.** `Bash` is removed from the agent's tool surface entirely, along with subagents. It
-  edits a real checkout with host-native read/write tools; there is no sandbox.
+- **Requests are judged three times** *when the judge is on*: the request before work starts, every
+  individual write before it reaches disk, and the real diff before a PR. The third also blocks on a
+  human clicking approve, and a fourth, human-only confirmation guards adding a project. Those two
+  human gates hold regardless of `judge`; the three verdicts do not.
+- **The full harness, deliberately.** `Bash`, subagents, `WebSearch`, `WebFetch` and
+  `AskUserQuestion` are all available — `disallowedTools` is empty because the operator asked for
+  them. There is no sandbox: the agent edits a real checkout with host-native tools.
+- **Paths are confined; commands are not.** Every `Read`, `Edit` and `Write` is resolved inside the
+  task worktree and refused outside it, and a real `.env` is unreadable while no task exists. `Bash`
+  takes a string rather than a path, so nothing at the tool layer confines it — inside a shell, the
+  worktree boundary is a request in `agent/instructions.md`. `disallowedTools: ["Bash(git push:*)"]`
+  is the one-line way to make the no-push rule structural again without giving up the shell.
 - **Attachments** reach the model as content blocks, never files on disk: images, PDFs and text/code
   only, 5 files and 5MB each, 15MB a turn.
 - **A design system is input, not invention.** Before any visual change the agent reads the target
@@ -84,7 +103,13 @@ Its voice is the one written into `agent/instructions.md`: plain language, no di
 framework names, no file paths in the main answer; one concrete question with options rather than a
 paragraph of tradeoffs; and when something is not possible, what can be done instead.
 
-No logo, wordmark, or brand guidelines exist. The interface currently uses Geist and Geist Mono.
+No logo or mark exists. The only identity is the name itself, set lowercase in Geist at 48px on the
+empty state — the one place display type appears in the product.
+
+The visual system is documented in `DESIGN.md` (North Star: "The Glass Workshop") with its
+machine-readable sidecar at `.impeccable/design.json`. Two anti-references are binding there and are
+product commitments, not taste: becode must not look like an enterprise dashboard, and it must not
+look like a developer IDE or terminal. The second follows directly from who this is for.
 
 ## Evidence on Hand
 
@@ -100,7 +125,9 @@ cases (`npm run check:policy`), and the working loop end to end.
 ## Product Principles
 
 1. **The boundary is mechanical, never persuasive.** Anything that decides what the person may ask
-   for is enforced where the call is made, not in a prompt. A prompt is not a boundary.
+   for is enforced where the call is made, not in a prompt. A prompt is not a boundary. This is the
+   principle new work is held to; it is not a description of the current install, which has the
+   judge off and the shell on. Say which of the two you mean.
 2. **Approval is looking, not reading.** Every decision the person is asked to make is put in front
    of them as the running product, or as plain language about it.
 3. **The only way out is a pull request.** Nothing becode does can be irreversible on someone else's

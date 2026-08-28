@@ -15,8 +15,8 @@ import { tokenize, typingSkill } from "@/lib/skill-tokens";
 import { cn } from "@/lib/utils";
 import { AgentMessage } from "./agent-message";
 import { ChatSidebar } from "./chat-sidebar";
-import { LiveStatus } from "./live-status";
 import { useBecodeAgent } from "./use-becode-agent";
+import { WorkshopWindow } from "./workshop-window";
 
 const AGENT_NAME = "becode";
 
@@ -292,16 +292,19 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
         reloadKey={reloadKey}
       />
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 px-4 sm:px-6">
-          <span className="truncate text-muted-foreground text-sm">
+      {/*
+        Fixed width, not a share of the viewport. The conversation is a constant-size instrument;
+        the window beside it is the part that should get every pixel the screen can spare.
+      */}
+      <main className="flex w-[27.5rem] shrink-0 flex-col overflow-hidden pt-3">
+        <header className="flex h-11 shrink-0 items-center gap-3 px-4">
+          <span className="truncate text-muted-foreground text-xs">
             {agent.projectId ? `${AGENT_NAME} · ${agent.projectId}` : AGENT_NAME}
           </span>
-          <LiveStatus onBranch={setLiveBranch} projectId={agent.projectId} sessionId={agent.openChatId} />
         </header>
 
         {agent.error ? (
-          <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-2 sm:px-6">
+          <div className="w-full shrink-0 px-4 pt-2">
             <div
               className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm"
               role="alert"
@@ -319,7 +322,7 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
           <MessageScroller
             busy={isBusy}
             className="min-h-0 flex-1"
-            contentClassName="mx-auto flex w-full max-w-3xl flex-col gap-10 px-4 py-6 sm:px-6"
+            contentClassName="flex w-full flex-col gap-10 px-4 py-6"
             label={`${AGENT_NAME} transcript`}
           >
             {agent.messages.map((message) =>
@@ -346,25 +349,29 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
 
         <div
           className={cn(
-            "mx-auto w-full px-4 sm:px-6",
-            isEmpty
-              ? "flex max-w-xl flex-1 flex-col items-center justify-center gap-8 pb-[10vh]"
-              : "max-w-3xl shrink-0 pb-6",
+            "w-full px-4 pb-3",
+            isEmpty ? "flex flex-1 flex-col justify-end gap-6" : "shrink-0",
           )}
         >
           {isEmpty ? (
-            <div className="flex flex-col items-center gap-3 text-center">
+            <div className="flex flex-col gap-3">
               <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
-              <p className="text-balance text-muted-foreground">
+              <p className="text-balance text-muted-foreground text-sm">
                 {agent.projectId
-                  ? `Describe a change to ${agent.projectId}. You will see it running before it becomes a pull request.`
-                  : "Describe a change. You will see it running before it becomes a pull request."}
+                  ? `Describe a change to ${agent.projectId}. You will see it running here before it becomes a pull request.`
+                  : "Describe a change. You will see it running here before it becomes a pull request."}
               </p>
             </div>
           ) : null}
           {composer}
-          </div>
+        </div>
       </main>
+
+      <WorkshopWindow
+        onBranch={setLiveBranch}
+        projectId={agent.projectId}
+        sessionId={agent.openChatId}
+      />
     </div>
   );
 }
