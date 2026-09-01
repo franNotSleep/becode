@@ -859,10 +859,18 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 - **`canUseTool` is async** and receives `toolUseID`, which is what makes an awaited human
   approval possible without inventing a protocol.
 - **`PreToolUse` hooks run before everything** and can deny even under `bypassPermissions`. Used
-  for one thing: putting `Bash`'s working directory back inside the worktree, because it is the
+  for two things, both of them inputs the model got wrong and `canUseTool` could not reach. One is
+  putting `Bash`'s working directory back inside the worktree, because it is the
   only surface that sees every command (see the fact above). It also fires *ahead* of
   `canUseTool`, which then sees the rewritten input — confirmed on the same live turn. Denying
   from a hook is the upgrade path if `canUseTool` ever stops being enough for the other tools.
+- **A subagent runs in the background by default, and here that is a dead end.**
+  `AgentInput.run_in_background` defaults to true; the completion arrives as a notification on a
+  session the CLI is still running. becode's loop breaks on `result`, so nothing is left to deliver
+  it — a live turn ended with the agent saying it would wait for a result that could never come.
+  The second `PreToolUse` hook in `session.ts` forces `run_in_background: false`. It carries no
+  `matcher`: the tool is `Task` in the deny list and `Agent` in the callback, and a matcher is one
+  string.
 - **Plugins load by local path** (`{type:"local", path}`) and the manifest is optional; skills are
   auto-discovered from `<plugin>/skills/<name>/SKILL.md` and namespaced `<plugin>:<skill>`.
 - **`resume`** continues a session by id; the id arrives on the `system` init message.

@@ -494,6 +494,37 @@ export async function run({
                 },
               ],
             },
+            /**
+             * A subagent has to finish inside the turn that started it.
+             *
+             * `AgentInput.run_in_background` defaults to **true** (`sdk-tools.d.ts`), and a
+             * background agent reports back through a notification delivered on a session the CLI
+             * is still running. becode's loop breaks on `result` and the SDK reaps the subprocess,
+             * so that notification has nowhere to land — the agent says "I'll wait for the agent's
+             * result", the turn ends, and it waits forever. Observed on a live turn.
+             *
+             * A hook rather than `canUseTool` for the same reason as the shell above: the `Agent`
+             * call itself does not reliably reach the callback. No `matcher`, because the tool is
+             * `Task` in the deny list and `Agent` in the callback and a matcher is one string.
+             */
+            {
+              hooks: [
+                async (hook) => {
+                  const { tool_name: name, tool_input: input } = hook as {
+                    tool_name?: string;
+                    tool_input?: Record<string, unknown>;
+                  };
+                  if (name !== "Task" && name !== "Agent") return { continue: true };
+                  return {
+                    continue: true,
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      updatedInput: { ...input, run_in_background: false },
+                    },
+                  };
+                },
+              ],
+            },
           ],
         },
         maxTurns: MAX_TURNS,
