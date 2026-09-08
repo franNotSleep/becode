@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProjectDesign } from "@/agent/lib/impeccable";
 import { EASE_OUT } from "@/lib/ease";
 import { cn } from "@/lib/utils";
+import { AccountButton } from "./account-button";
 import { DesignSystemCard } from "./design-system-card";
 import { ProjectPicker } from "./project-picker";
 import { ProjectSettings } from "./project-settings";
@@ -134,6 +135,8 @@ export function ChatSidebar({
         <RailButton className="mt-auto" label="Add a project" onClick={() => setAddingProject(true)}>
           <FolderPlusIcon className="size-4" />
         </RailButton>
+
+        <AccountButton />
       </nav>
 
       <ProjectPicker onOpenChange={setAddingProject} onPick={onAddProject} open={addingProject} />
