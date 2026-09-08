@@ -1,0 +1,25 @@
+# The image ships the whole repo on purpose — `agent/instructions.md`, `roles/<role>.md` and
+# `agent/skills/*/SKILL.md` are read off disk at `process.cwd()`, not imported, so a standalone
+# bundle would boot and then throw on the first turn. This list is what must NOT come along.
+
+# Rebuilt inside the image, and platform-specific: the Agent SDK's native binary is an
+# optionalDependency resolved per OS and libc, so a macOS node_modules would be the wrong one.
+node_modules
+.next
+*.tsbuildinfo
+dist
+.output
+.nitro
+
+# Credentials. The container reads its env from `env_file` at run time; a token baked into a layer
+# is a token in the registry.
+.env
+.env.*
+!.env.example
+
+.git
+.vercel
+.DS_Store
+
+# The stale second lockfile — pnpm is the package manager here.
+package-lock.json

@@ -14,6 +14,7 @@ import { rolePolicy } from "../lib/roles.ts";
 import { appendEvents, findProject, moveEvents } from "../lib/db.ts";
 import { canRead } from "../lib/reads.ts";
 import { type Chat, chatFor, inWorktree, rememberChat, resolveInWorktree } from "../lib/task.ts";
+import { PUSH_REFUSAL, pushesUpstream } from "../lib/shell.ts";
 import { judgeChange } from "./judge.ts";
 import { becodeTools, TOOL } from "./tools.ts";
 import { assistantEvents, toolResultEvents } from "./transcript.ts";
@@ -449,7 +450,18 @@ export async function run({
         // not track, and `ExitWorktree` can delete one it does. `canUseTool` refused both anyway
         // by defaulting to deny — but the model could still see them, and spent four calls of a
         // real turn finding out.
-        disallowedTools: ["EnterWorktree", "ExitWorktree"],
+        //
+        // `Bash(git push:*)` is the invariant at the top of CLAUDE.md, made structural rather than
+        // asked for. It costs nothing legitimate: `open_pull_request` pushes through `execFile`
+        // (`git()` in `agent/lib/git.ts`), never the shell, so the intended way out is untouched
+        // and the only thing blocked is the one `agent/instructions.md` already forbids. It became
+        // worth having when the deployment started holding a push-capable `GH_TOKEN` behind a URL
+        // with no authentication on it.
+        //
+        // Be honest about the shape of it: this is a prefix match on the command, so it stops
+        // `git push …` and not `git -C … push` or a push on the far side of a `&&`. It raises the
+        // floor; it is not a sandbox.
+        disallowedTools: ["EnterWorktree", "ExitWorktree", "Bash(git push:*)"],
         // Load no settings files. A `permissions.allow` rule in the *target repo's*
         // .claude/settings.json would auto-approve tools before canUseTool ever sees them —
         // and the target repo is not becode's trust boundary.
@@ -478,16 +490,35 @@ export async function run({
               matcher: "Bash",
               hooks: [
                 async (hook) => {
+                  const input = (hook as { tool_input?: Record<string, unknown> }).tool_input ?? {};
+                  const command = String(input.command ?? "");
+
+                  // The refusal has to be here, not in `disallowedTools`. The rewrite below turns
+                  // `git push …` into `cd '…'\ngit push …`, and a scoped deny rule matches the
+                  // rewritten string — so the prefix stops matching on precisely the turn that
+                  // starts a task. This hook is also the only surface shown every command; the CLI
+                  // auto-approves read-only ones without consulting `canUseTool` at all.
+                  if (pushesUpstream(command)) {
+                    return {
+                      continue: false,
+                      stopReason: PUSH_REFUSAL,
+                      hookSpecificOutput: {
+                        hookEventName: "PreToolUse",
+                        permissionDecision: "deny",
+                        permissionDecisionReason: PUSH_REFUSAL,
+                      },
+                    };
+                  }
+
                   const task = chat.task;
                   if (!task || turnCwd === task.worktree) return { continue: true };
-                  const input = (hook as { tool_input?: Record<string, unknown> }).tool_input ?? {};
                   return {
                     continue: true,
                     hookSpecificOutput: {
                       hookEventName: "PreToolUse",
                       updatedInput: {
                         ...input,
-                        command: inWorktree(String(input.command ?? ""), task.worktree),
+                        command: inWorktree(command, task.worktree),
                       },
                     },
                   };

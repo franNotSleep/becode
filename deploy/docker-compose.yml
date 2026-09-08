@@ -1,0 +1,82 @@
+# The becode stack, as it runs on the server. Copy to /home/becode/stack/docker-compose.yml.
+#
+# This is not the repo's own docker-compose.yml — that one starts MinIO for a laptop. This one is
+# the whole box: becode, its object store, and the thing that updates it.
+
+services:
+  becode:
+    image: ghcr.io/frannotsleep/becode:main
+    container_name: becode
+    restart: unless-stopped
+
+    # A dev server is `sh -c "..."` with the real server as its child, so the container collects
+    # zombies without an init to reap them.
+    init: true
+
+    # Host networking, deliberately. becode's model is that a project's ports are *data* — a sqlite
+    # row edited in the UI — so a new app port must not mean editing this file and recreating the
+    # container. It is also what lets `lsof` and the loopback liveness probe behave exactly as they
+    # do on a laptop.
+    #
+    # The cost is real, and the host firewall is load-bearing because of it. becode's own CMD pins
+    # `-H 127.0.0.1`, but a dev server's bind address comes from its recipe — sqlite data the agent
+    # authors — and `next dev` and `vite` bind every interface unless told otherwise. A recipe that
+    # forgets serves the preview on `http://<server-ip>:3002`, straight past the `forward_auth`
+    # gate on `p3002.…`. Allow 22/80/443 inbound and nothing else.
+    #
+    # `ports:` is meaningless under host networking — compose discards it. Do not add one.
+    network_mode: host
+
+    env_file: /home/becode/stack/.env
+
+    # Everything that must outlive an image swap: ~/.becode (sqlite + worktrees), ~/.claude (the
+    # SDK's session store, which the sidebar reads), ~/.gitconfig, the pnpm store, and the target
+    # repo checkouts. Same path on both sides so a path in an error message can be cd'd to.
+    volumes:
+      - /home/becode:/home/becode
+
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: becode-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9040:9000"
+      - "127.0.0.1:9041:9001"
+    # Interpolated, and deliberately NOT `env_file`. Interpolation is done by the compose CLI,
+    # which reads a `.env` beside this file — that is why the operator's file has to be called
+    # `.env` and not `becode.env`: pointing it elsewhere fails with an error naming a variable
+    # they have already set, in a file compose never read. Handing MinIO the whole env_file would
+    # also give an object store becode's auth secret and Claude token, which it has no use for.
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in /home/becode/stack/.env}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in /home/becode/stack/.env}
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: becode-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Scoped to the one container carrying the label. Without this it would also decide to
+      # upgrade MinIO, which is pinned for a reason.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_TIMEOUT: "30s"
+      # 04:00, not a five-minute poll. A recreate is a hard interrupt: it kills an in-flight turn
+      # mid-edit and blanks whatever someone was watching until Start is pressed again.
+      WATCHTOWER_SCHEDULE: "0 0 4 * * *"
+
+volumes:
+  minio:

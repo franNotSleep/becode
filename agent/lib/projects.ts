@@ -53,9 +53,26 @@ export const projectPorts = (project: Project): number[] => [
   ...(project.services ?? []).map((service) => service.port).filter((p): p is number => !!p),
 ];
 
+/**
+ * How a booted port is addressed **from a browser**.
+ *
+ * On a laptop the browser and the dev server share a loopback, so `localhost` is the answer and
+ * the default is right. On a server they do not: this string is built here and rendered as an
+ * `<iframe src>` in the workshop window, where `localhost` means the *viewer's* machine and the
+ * frame comes up empty. `BECODE_PUBLIC_URL` is the deployment's way to say where its ports are
+ * actually reachable — `https://p{port}.example.com`, or a path scheme if it ever proxies that
+ * way. `{port}` is the only substitution, so nothing here knows about any particular target repo.
+ *
+ * It starts with `BECODE_`, so `childEnv` already keeps it out of every dev server it spawns.
+ */
+const PUBLIC_URL = process.env.BECODE_PUBLIC_URL;
+
+export const publicUrl = (port: number): string =>
+  PUBLIC_URL ? PUBLIC_URL.replaceAll("{port}", String(port)) : `http://localhost:${port}`;
+
 /** Where each of a project's apps will be reachable once `run_project` has booted it. */
 export const appUrls = (project: Project) =>
   project.apps.map((app) => {
     const port = app.port + PORT_OFFSET;
-    return { name: app.name, port, url: `http://localhost:${port}` };
+    return { name: app.name, port, url: publicUrl(port) };
   });

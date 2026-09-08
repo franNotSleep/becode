@@ -21,6 +21,7 @@
     "check:blobs": "node --experimental-strip-types --env-file-if-exists=.env.local agent/lib/blobs.check.ts",
     "check:reads": "node --experimental-strip-types agent/lib/reads.check.ts",
     "check:gate": "node --experimental-strip-types agent/lib/gate.check.ts",
+    "check:shell": "node --experimental-strip-types agent/lib/shell.check.ts",
     "check:ports": "node --experimental-strip-types agent/lib/ports.check.ts",
     "check:logs": "node --experimental-strip-types agent/lib/logs.check.ts",
     "check:live": "node --experimental-strip-types agent/sdk/live.check.ts",

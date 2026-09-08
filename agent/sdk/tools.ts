@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { addProject, allProjects, findProject } from "../lib/db.ts";
 import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts";
 import { holders, isListening, release } from "../lib/ports.ts";
-import { appUrls, type Project } from "../lib/projects.ts";
+import { appUrls, publicUrl, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git } from "../lib/git.ts";
 import { impeccableContext, type ImpeccableState } from "../lib/impeccable.ts";
 import { rolePolicy } from "../lib/roles.ts";
@@ -480,7 +480,23 @@ export function childEnv(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const inherited = { ...base };
-  for (const key of ["PORT", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "LINEAR_API_KEY"]) {
+  for (const key of [
+    "PORT",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "LINEAR_API_KEY",
+    // A deployment that can open pull requests holds a push-capable token. `open_pull_request`
+    // reaches it through `execFile` and the real `process.env`, so nothing here needs it.
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    // Sign-in. `BETTER_AUTH_*` and `SENDGRID_*` do not match any prefix below, and a dev server
+    // that could mint a becode session would make the gate in `proxy.ts` decorative.
+    "BETTER_AUTH_SECRET",
+    "BETTER_AUTH_URL",
+    "BETTER_AUTH_TRUSTED_ORIGINS",
+    "SENDGRID_API_KEY",
+    "SENDGRID_FROM",
+  ]) {
     delete inherited[key];
   }
   for (const key of Object.keys(inherited)) {
@@ -565,7 +581,7 @@ export async function bootProject(
     if (live.has(service.name)) continue;
     // A declared port is also an address. Without this the bar showed the backend as "up" with
     // nothing to click — the one server whose logs you actually want is the one you cannot open.
-    const url = service.port ? `http://localhost:${service.port}` : undefined;
+    const url = service.port ? publicUrl(service.port) : undefined;
     await clearPort(service.port);
     start(service.name, project.path, service.command, {}, url, service.port, false);
     started.push(service.name);

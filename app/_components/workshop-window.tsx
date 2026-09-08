@@ -306,7 +306,7 @@ function StageBody({
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <p className="shrink-0 px-5 pt-4 text-muted-foreground text-sm">
-          {server.name} is running on {server.url.replace("http://", "")}. Its output:
+          {server.name} is running on {server.url.replace(/^https?:\/\//, "")}. Its output:
         </p>
         <LogTail name={server.name} />
       </div>

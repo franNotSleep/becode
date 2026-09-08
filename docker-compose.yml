@@ -13,12 +13,17 @@
 # Without it becode still runs; attachments are the only thing that fails, and they fail loudly.
 services:
   minio:
-    image: minio/minio:latest
+    # Pinned, not `:latest`. Watchtower is label-scoped so it will not move this on its own,
+    # but `docker compose pull` would — and an object store that silently changes version
+    # under stored attachments is not a thing to find out about later.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: becode-minio
     command: server /data --console-address ":9001"
+    # Bound to loopback, not every interface. On a laptop behind NAT the difference is invisible;
+    # on a public box `9040:9000` would publish object storage — and its console — to the internet.
     ports:
-      - "9040:9000"
-      - "9041:9001"
+      - "127.0.0.1:9040:9000"
+      - "127.0.0.1:9041:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-becode}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-becode-dev-secret}
