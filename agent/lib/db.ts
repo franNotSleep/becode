@@ -54,6 +54,12 @@ function db(): DatabaseSync {
   if (handle) return handle;
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
   handle = new DatabaseSync(FILE);
+  // `auth.ts` opens the same file for better-auth's tables, so this is two writers: a sign-in
+  // storing a session while a turn appends message rows. WAL lets them overlap; `busy_timeout`
+  // makes whoever loses a lock wait rather than fail. It goes first, because switching to WAL is
+  // itself a statement that needs the lock.
+  handle.exec("PRAGMA busy_timeout = 5000;");
+  handle.exec("PRAGMA journal_mode = WAL;");
   handle.exec(SCHEMA);
 
   // First run on this machine: the file someone hand-wrote is the starting set.
