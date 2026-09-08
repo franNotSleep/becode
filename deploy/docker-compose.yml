@@ -69,6 +69,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
+      # Watchtower's Docker client negotiates from 1.25, and Docker 29 refuses anything below
+      # 1.40 — so without this it crash-loops on `client version 1.25 is too old` and quietly
+      # never updates anything. Any version the daemon accepts will do; this one is old enough to
+      # outlive a downgrade and new enough to be accepted. Observed on the first boot of the box.
+      DOCKER_API_VERSION: "1.44"
       # Scoped to the one container carrying the label. Without this it would also decide to
       # upgrade MinIO, which is pinned for a reason.
       WATCHTOWER_LABEL_ENABLE: "true"
