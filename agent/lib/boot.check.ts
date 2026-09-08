@@ -44,6 +44,23 @@ assert.equal(
   "nor the Linear key becode files issues with",
 );
 assert.equal(env.BECODE_MAX_TURNS, undefined, "nor its own settings");
+
+// Nor anything that could mint a session or push a branch. Neither prefix matches the BECODE_/
+// NEXT_/MINIO_ rules below, so both are named explicitly and both are easy to forget.
+const creds = childEnv(
+  {
+    ...process.env,
+    GH_TOKEN: "ghp_secret",
+    GITHUB_TOKEN: "ghs_secret",
+    BETTER_AUTH_SECRET: "auth_secret",
+    SENDGRID_API_KEY: "SG.secret",
+  },
+  {},
+);
+assert.equal(creds.GH_TOKEN, undefined, "a dev server cannot push with becode's token");
+assert.equal(creds.GITHUB_TOKEN, undefined, "under either spelling");
+assert.equal(creds.BETTER_AUTH_SECRET, undefined, "nor forge a becode session");
+assert.equal(creds.SENDGRID_API_KEY, undefined, "nor send mail as becode");
 assert.equal(env.PATH, "/usr/bin", "everything else is passed through");
 assert.equal(childEnv({ ...process.env, PORT: "4000" }, { PORT: "3002" }).PORT, "3002", "an explicit port still wins");
 

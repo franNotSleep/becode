@@ -18,9 +18,12 @@ const { addProject, allProjects, appendEvents, deleteEvents, findProject, loadCh
 const { chatFor, forgetChat, rememberChat, setTask } = await import("./task.ts");
 const { projects: seed } = await import("../../becode.projects.ts");
 
-// First open on a fresh machine takes becode.projects.ts as the starting set, whole.
+// First open on a fresh machine takes becode.projects.ts as the starting set, whole. That set is
+// empty as shipped — a path in the seed is a path from whichever machine wrote it, and the insert
+// happens once — so the assertion that matters is "exactly what the file says, no more", which
+// holds either way. The row-by-row check runs only if someone has put rows back.
 assert.deepEqual(allProjects().map((p) => p.id), seed.map((p) => p.id));
-assert.deepEqual(findProject(seed[0].id), seed[0]);
+for (const declared of seed) assert.deepEqual(findProject(declared.id), declared);
 assert.throws(() => findProject("nope"), /Unknown project "nope"/);
 
 // A recipe the agent worked out is a row like any other, and survives the round trip intact.
@@ -47,7 +50,9 @@ assert.equal(allProjects().length, seed.length + 1, "an update is not a second r
 assert.equal(findProject("scraper").services?.[1].port, 4010, "a service port survives the round trip");
 
 // Seeding happens once: a second open of the same file must not double up.
-assert.equal(allProjects().filter((p) => p.id === seed[0].id).length, 1);
+for (const declared of seed) {
+  assert.equal(allProjects().filter((p) => p.id === declared.id).length, 1);
+}
 
 // A chat keeps its worktree across the process that made it. The Map is a cache, so everything
 // here is read back through `chatFor`, which is the only path a resumed turn takes.

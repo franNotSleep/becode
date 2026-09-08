@@ -3,33 +3,17 @@
  *
  * This is about *where* the code is, not *what may change* — constraints are per role, in
  * plain English, under `roles/`.
+ *
+ * This is the **seed**, not the record. `agent/lib/db.ts` inserts whatever is declared here the
+ * first time the `projects` table is empty, and never again; after that the store is the record
+ * and this file is inert. So it is empty on purpose: a path written here is a path from whichever
+ * machine authored it, and `PATCH /api/projects/[id]` refuses to edit `id` and `path` — a wrong
+ * one is unfixable short of deleting the database, which takes every chat with it.
+ *
+ * Add a project the way the product intends instead: the `+` beside Projects opens a folder
+ * picker, the agent reads the repo and works out its boot recipe, and `propose_project` stops for
+ * a person to approve it.
  */
 import { defineProjects } from "./agent/lib/projects.ts";
 
-export const projects = defineProjects([
-  {
-    id: "tix",
-    path: "/Users/frannotsleep/Dev/tixdo/web",
-    baseBranch: "main",
-    install: "pnpm install --frozen-lockfile",
-    // The Linear team PRs are filed under. Not a guess: the workspace has more than one team,
-    // and the issue identifier ends up in the branch name.
-    linearTeam: "TIX",
-    // Shared, fixed-port, and run from the source checkout — see `services` in projects.ts.
-    // The backend's own .env pins it to :3031, which both apps already point at.
-    services: [
-      { name: "database", command: "docker compose -f apps/tixbackend/docker-compose.yml up -d" },
-      { name: "backend", command: "pnpm dev:backend", port: 3031 },
-    ],
-    // Both apps' own dev scripts pin a port, which would ignore $PORT — bypass them.
-    apps: [
-      { name: "storefront", command: "pnpm --filter tixclient exec next dev -p $PORT", port: 3002 },
-      { name: "vendor admin", command: "pnpm --filter tixvendor exec vite --port $PORT", port: 3000 },
-    ],
-    designSystem: [
-      "apps/tixclient/components.json",
-      "apps/tixclient/src/app/globals.css",
-      "apps/tixclient/src/components/ui",
-    ],
-  },
-]);
+export const projects = defineProjects([]);

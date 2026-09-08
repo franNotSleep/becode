@@ -31,6 +31,8 @@ Use a bounded authoring loop:
 - **A new policy rule** → `roles/<role>.md`, in plain English. Never in a prompt, never in code.
 - **A new target project** → a row via `addProject` in `agent/lib/db.ts`. `becode.projects.ts` only
   seeds an empty store; editing it after first run changes nothing.
+- **A new route that must be reachable without signing in** → `OPEN_PATHS` in `agent/lib/gate.ts`,
+  and add the case to `gate.check.ts`. Everything else is closed by default; `proxy.ts` enforces it.
 - **Anything touching what the agent may do** → `canUseTool` in `agent/sdk/session.ts`, and read
   the permissions warning in CLAUDE.md before you touch it. Note the discovery grant: a chat with
   no task may read one picked folder, minus its real `.env` files, and may not `Grep`.

@@ -25,12 +25,11 @@ These are the point of the project. Do not relax them for convenience.
 
 - **No production writes, ever.** The agent's only output path to a target repo is a pull request
   against a non-default branch. No `git push` to `main`/`production`, no deploys, no force-push.
-  **This one is currently asked for, not enforced.** It used to be structural — with no `Bash`
-  there was no command to push with. The operator asked for the full harness, so `disallowedTools`
-  is empty and the shell is back; `agent/instructions.md` tells the agent not to push, and a prompt
-  is not a boundary. Gate 3 still stands in front of `open_pull_request`, which is the *intended*
-  path out; it is no longer the *only* one. `disallowedTools: ["Bash(git push:*)"]` is the one-line
-  way to make it structural again without giving up the shell.
+  It used to be structural — with no `Bash` there was no command to push with — then the operator
+  asked for the full harness and it became a line in `agent/instructions.md`, which is not a
+  boundary. `disallowedTools` now carries `Bash(git push:*)`, so it is structural again for the
+  obvious spelling, and gate 3 still stands in front of `open_pull_request`, the intended path out.
+  A prefix rule is not airtight (`git -C … push` walks past it), so read this as a raised floor.
 - **The role policy binds — where it is switched on.** One instance, one role, one plain-English
   policy in `roles/`. Enforce it at the tool layer (deny the call), never in the prompt — prompts
   are not a boundary. `judge` in `becode.config.ts` turns all three verdicts off for an instance
@@ -42,7 +41,10 @@ These are the point of the project. Do not relax them for convenience.
   spacings, or components are a bug.
 - **Target-repo-agnostic.** Nothing may hardcode Tix. Project setup is discovered from the target
   repo (package manager, scripts, compose/env files) or declared in per-project config. Projects
-  live in `agent/lib/db.ts`; `becode.projects.ts` only seeds an empty store.
+  live in `agent/lib/db.ts`; `becode.projects.ts` seeds nothing at all. This extends to the
+  deployment: `BECODE_PUBLIC_URL` is a `{port}` template, not a list of hostnames, and a target's
+  own quirks — which address its dev server binds, which hosts it will answer for — belong in that
+  project's recipe, where they can be edited without a redeploy.
 - **Parallel tasks are isolated.** Concurrent tasks get separate git worktrees and separate ports.
   Two tasks must never share a working tree.
 
@@ -86,6 +88,12 @@ and namespaced `becode:<name>`. If a skill "isn't being picked up", check the `p
 | git worktree / diff helpers | `agent/lib/git.ts` |
 | becode's own tools | `agent/sdk/tools.ts` (one SDK MCP server, `mcp__becode__*`) |
 | Filing the Linear issue a PR is tracked by | `agent/lib/linear.ts` |
+| **Who may sign in, and the session** | `agent/lib/auth.ts`, `lib/auth-client.ts` |
+| **What is reachable without a session** | `agent/lib/gate.ts` (`npm run check:gate`), enforced in `proxy.ts` |
+| **The one shell command becode refuses** | `agent/lib/shell.ts` (`npm run check:shell`), denied in the `PreToolUse` hook |
+| The sign-in page, and the way out | `app/login/`, `app/_components/sign-in.tsx`, `account-button.tsx` |
+| Sending the one email becode sends | `agent/lib/mail.ts` |
+| Running it on a server | `Dockerfile`, `deploy/`, `.github/workflows/` |
 | **The agent loop and all three gates** | `agent/sdk/session.ts` |
 | Answering the agent's questions | `askQuestions` in `agent/sdk/session.ts`, `app/api/agent/answer/` |
 | Always-on system prompt | `agent/instructions.md` |
@@ -152,9 +160,13 @@ diff, which says what it does on its own.
 
 ## Where projects live
 
-`becode.projects.ts` is now the **seed**, not the record. `agent/lib/db.ts` opens a `node:sqlite`
-database at `~/.becode/becode.db` (Node 24 ships it; no dependency) and, the first time the table
-is empty, inserts whatever the file declares. `allProjects` / `findProject` / `addProject` /
+`becode.projects.ts` is now the **seed**, not the record — and the seed is **empty**.
+`agent/lib/db.ts` opens a `node:sqlite` database at `~/.becode/becode.db` (Node 24 ships it; no
+dependency) and, the first time the table is empty, inserts whatever the file declares. It declares
+nothing, on purpose: a path written there is a path from whichever machine authored it, the insert
+happens once and never again, and `PATCH /api/projects/[id]` refuses to edit `id` and `path` — so a
+wrong one is unfixable short of deleting the database, which takes every chat with it. Add a project
+through the picker instead; that is what it is for. `allProjects` / `findProject` / `addProject` /
 `saveProject` are the only ways in; nothing imports `becode.projects.ts` any more except the seed
 path.
 
@@ -418,8 +430,11 @@ now carries an explicit `app` flag, because `url` was doubling as "is this an ap
 **becode's own environment does not reach a target's servers.** `next dev` sets
 `process.env.PORT = 4000` (`start-server.js`), and children inherited it — so the tix backend bound
 becode's own port instead of the 3031 in its `.env` and died with EADDRINUSE, invisibly, for as long
-as this repo has existed. `childEnv` strips `PORT`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`
-and `BECODE_*`; an explicit override still wins, which is how apps get their port.
+as this repo has existed. `childEnv` strips `PORT`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+`LINEAR_API_KEY`, `GH_TOKEN`/`GITHUB_TOKEN` and `BECODE_*`; an explicit override still wins, which
+is how apps get their port. The GitHub tokens are there for the server deployment, which holds a
+push-capable one — `open_pull_request` reaches it through `execFile` and the real `process.env`, so
+nothing a dev server inherits needs it.
 
 **Apps are detached, and reaped on exit.** `spawn(..., {shell: true})` makes the child `/bin/sh -c`
 and the dev server its *grandchild*, so `child.kill()` took down the shell and left the server
@@ -473,13 +488,25 @@ stays testable while unenforced.
 The built-in tools are **host-native**: `Read`, `Glob`, `Grep`, `Edit` and `Write` act on the real
 checkout.
 
-**`disallowedTools` is empty of anything the operator asked for, and that is a deployment choice
-like `judge: false`.** `Bash`, `Task`/`Agent`, `WebSearch`, `WebFetch` and `AskUserQuestion` were
-removed from the request outright — the model never saw them. The operator asked for the whole
+**`disallowedTools` holds nothing the operator asked for except one scoped rule, and that is a
+deployment choice like `judge: false`.** `Bash`, `Task`/`Agent`, `WebSearch`, `WebFetch` and
+`AskUserQuestion` were removed from the request outright — the model never saw them. The operator asked for the whole
 harness, so they are back, and `FULL_ACCESS` in `session.ts` allows them at the gate, because
 `canUseTool` defaults to deny and un-removing a tool alone would leave it refused.
 
-Two entries remain, and they are not policy: **`EnterWorktree` and `ExitWorktree` manage worktrees
+**"A pull request or nothing" is enforced in the `PreToolUse` hook, not in `disallowedTools`** —
+and the reason is a trap becode sets for itself. `disallowedTools: ["Bash(git push:*)"]` is still
+there and still correct as far as it goes, but hooks run *first* and the deny rule matches the
+input they produce. becode's own hook rewrites a command to `cd '<worktree>' || exit 1\n<command>`
+whenever the turn's cwd is not the worktree — which is every call on the turn that ran
+`start_task`. The rewritten string's prefix is `cd`, so the rule stops matching on exactly the turn
+a task begins. `pushesUpstream` in `agent/lib/shell.ts` refuses it in the hook instead, which is
+also the only surface shown every command: the CLI auto-approves read-only ones without consulting
+`canUseTool` at all. It costs nothing legitimate — `open_pull_request` pushes through `execFile`
+(`git()` in `agent/lib/git.ts`), never the shell. It reads a string, so `$(echo push)` walks past
+it; the boundary is still gate 3 and a disposable worktree.
+
+Two more remain, and those are not policy: **`EnterWorktree` and `ExitWorktree` manage worktrees
 becode owns.** `EnterWorktree` cuts a tree becode does not track (and moves the session's `cwd`
 into it); `ExitWorktree` can delete one it does, branch included. Default-deny already refused
 both — but a denied tool is still a *visible* tool, and the model spent four calls of a real turn
@@ -488,9 +515,9 @@ discovering that, then concluded from the refusals that it had been sandboxed.
 Be clear-eyed about what that costs, because it is the invariant at the top of this file:
 
 - **`Bash` is not confinable by `resolveInWorktree`.** That check takes a path; a command is a
-  string. Inside a shell the worktree boundary and "a pull request or nothing" are what
-  `agent/instructions.md` asks for, not what the tool layer enforces. A one-line scoped rule —
-  `disallowedTools: ["Bash(git push:*)"]` — buys the second one back without giving up the shell.
+  string. Inside a shell the worktree boundary is what `agent/instructions.md` asks for, not what
+  the tool layer enforces. "A pull request or nothing" is no longer only asked for — see
+  `Bash(git push:*)` above — but the worktree boundary still is.
   It is also not fully *visible* to `canUseTool`: the CLI auto-approves read-only commands and
   those never reach the callback at all. What does happen is a `PreToolUse` hook putting the
   shell's **working directory** back — on a turn where `cwd` is not the worktree it rewrites the
@@ -800,6 +827,108 @@ works too if you would rather be billed per token.
 No sandbox, no keychain prompt. becode edits a local checkout with host-native tools; there is
 nothing to virtualize. The one container holds attachment bytes, not code.
 
+## Running it on a server
+
+`deploy/` holds the three files a box needs — a compose stack, a Caddyfile and an env template —
+and the `Dockerfile` beside them builds the image. GitHub Actions pushes it to GHCR on every merge
+to `main` and Watchtower pulls it at 04:00; nothing in CI can reach the server, which is the point.
+
+**One line stops working when the browser is not on the same machine.** `appUrls` built
+`http://localhost:${port}` and the workshop window puts that in an `<iframe src>` — so on a server
+it names the *viewer's* laptop and the frame comes up empty. `BECODE_PUBLIC_URL` is a template
+(`https://p{port}.example.com`), `{port}` its only substitution, so nothing here learns anything
+about a particular target repo. Unset, the default is `localhost` and a laptop is unchanged.
+
+**Host networking, and everything bound to loopback.** A project's ports are *data* — a sqlite row
+edited in the UI — so a new app port must not mean editing compose and recreating the container. It
+also keeps `lsof` and the loopback liveness probe behaving exactly as they do on a laptop. The cost
+is that a bind is no longer contained by the network namespace, so becode's `CMD` pins
+`-H 127.0.0.1` and each app command pins its own; Caddy is the only public listener. `ports:` is
+meaningless under `network_mode: host` — compose discards it.
+
+**The container is better at reaping than the laptop is.** Dev servers live in its PID namespace,
+so when PID 1 exits the kernel takes the rest with it. That is why the `CMD` execs `node` directly
+rather than `pnpm start`: pnpm in between forwards signals unreliably, and the handler in
+`tools.ts` is what stops the dev servers politely. The orphaned-server case `clearPort` exists for
+cannot happen here.
+
+**Watchtower re-creates from the running container's environment, not from `env_file`.** So
+rotating `CLAUDE_CODE_OAUTH_TOKEN` needs `docker compose up -d becode`; editing the file alone
+leaves the old value in service. It is label-scoped (`WATCHTOWER_LABEL_ENABLE`) or it would decide
+to upgrade the pinned MinIO too, and scheduled nightly rather than polled — a recreate is a hard
+interrupt that kills an in-flight turn mid-`Edit`.
+
+**`HOME` is the whole persistence story.** `WORKTREE_ROOT` is `os.homedir()` with no env override
+and needs none: point `HOME` at the bind mount and the worktrees, `becode.db`, the SDK's `~/.claude`
+session store that the sidebar reads, `.gitconfig` and the pnpm store all follow. The target repo
+checkouts live under it too, because the folder picker refuses anything outside `os.homedir()`.
+
+`git commit` in `open_pull_request` passes no `-c user.email`, so a `.gitconfig` with an identity
+has to exist before the first PR — otherwise the agent does all the work and dies at the last step.
+
+## Signing in
+
+Passwordless: an address at the company's domain, a six-digit code in the inbox, no password to
+choose or share. `BETTER_AUTH_SECRET` is the switch — unset, becode runs exactly as it always did,
+open, which is what a laptop wants.
+
+**The gate is `proxy.ts`, and it is one file rather than fifteen.** Next 16 renamed
+`middleware.ts` to `proxy.ts` and the rename brought the thing that makes it usable here: **Proxy
+defaults to the Node.js runtime**, so it can do a real session lookup against sqlite. On an edge
+runtime the best available check is "is there a cookie shaped like a session", and against
+`POST /api/agent` — which runs the agent with a shell — forging the *presence* of a cookie is not
+a defence. Verified: a made-up `better-auth.session_token` gets 401 on the API and a redirect on a
+page. One chokepoint, because the route someone forgets to guard is always the sixteenth one; same
+default-deny reasoning as `canUseTool`.
+
+**What is reachable without a session lives in `agent/lib/gate.ts`, not inline in the proxy** —
+`/login` and `/api/auth`, and nothing else. It is a list that decides who can run the agent, so
+`check:gate` drives it, including the prefix trap: `startsWith("/api/auth")` would also open a
+future `/api/authorize`, and matching on segment boundaries is what stops that.
+
+**The domain check refuses before a code is sent, not while sending one.** `emailOTP` will create
+an account for any address it is handed, so the restriction is the actual gate. It is a `before`
+hook on the auth endpoints, so it returns a real 403 the person can read; filtering inside
+`sendVerificationOTP` would look like it worked and simply never deliver, which is
+indistinguishable from a slow inbox.
+
+**better-auth takes a `node:sqlite` handle directly**, so this added no native module and nothing
+to the image, and its tables sit in `becode.db` beside `projects`, `chats` and `messages`. That
+makes two handles on one file, so both set `PRAGMA journal_mode = WAL` — and `busy_timeout`
+**first**, because switching to WAL is itself a statement that wants the lock. The first build of
+this failed exactly there: `next build` collects page data in parallel workers, all of which
+imported the module and opened the database, because it was built at import time. It is lazy now,
+for the same reason `db.ts` says its handle is.
+
+**The preview hosts are gated from outside.** They are dev servers becode started; they know
+nothing about becode and have no session, so Caddy asks `GET /api/auth/gate` on every request
+(`forward_auth`) and serves the preview only on a 2xx. `BECODE_COOKIE_DOMAIN` makes the session
+cookie the parent domain's, so the browser sends it to `p<port>.` hosts at all.
+
+`sameSite` stays **`lax`**, not `none`. The preview hosts share a registrable domain with becode,
+so the browser already counts the iframe as same-site and sends the cookie; `none` would be a
+downgrade bought for nothing. Verified end to end through a real Caddy: 401 with no session, 200
+with one, 401 with a forged cookie, and sub-paths gated too.
+
+One thing that looks like a bug and is not: an auth call with no `Origin` header answers 403.
+That is better-auth's CSRF check, browsers always send one, and `BETTER_AUTH_TRUSTED_ORIGINS` has
+to name the real public origin or every sign-out and sign-in is refused behind the proxy.
+
+**Sharing that cookie with the previews took a protection away, so the proxy puts it back.** Making
+`p<port>.` hosts same-site is what lets `forward_auth` gate them — and it also means SameSite=Lax
+no longer stands between becode's API and code running in a preview, which is the target repo's own
+dev server on a branch the agent is midway through editing. A script there can
+`fetch(".../api/agent", { credentials: "include" })`; CORS stops it reading the reply, not the turn
+from running. The usual comfort — "a JSON body forces a preflight" — is false here, because every
+route calls `request.json()`, which parses bytes and never reads `Content-Type`, so `text/plain`
+is a simple request that sends no preflight and parses fine on arrival. So `needsOriginCheck` in
+`gate.ts` requires an unsafe-method `/api/` call to carry a trusted `Origin`. Verified by running
+the attack: 403 from a preview origin, 200 from becode's own page, reads untouched.
+
+`/login?next=` is checked by `safeNext` for the same class of reason. `startsWith("/") &&
+!startsWith("//")` is the obvious guard and it lets `/\evil.com` through, because a browser
+resolves a backslash as a path separator and lands on `https://evil.com` with the sign-in fresh.
+
 ## Commands
 
 ```bash
@@ -810,6 +939,8 @@ npm run check:attachments    # the attachment allowlist and its caps — video r
 npm run check:db             # the store: projects, a chat keeping its worktree, the conversation
 npm run check:blobs          # object storage: round trip, content-addressing, key validation
 npm run check:reads          # the read boundary: worktree, discovery grant, secrets, Grep
+npm run check:gate           # what a person with no session can reach, and where sign-in may return
+npm run check:shell          # the one shell command becode refuses, in every spelling worth naming
 npm run check:ports          # finds and frees a real listener — starts one, kills it
 npm run check:logs           # the log ring buffer: trimming, absolute cursors, stale readers
 npm run check:live           # a turn outliving its subscribers: backlog, cursor, the append race
@@ -846,9 +977,9 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
   shell. Nothing in `disallowedTools` or `permissionMode` was set; this is the CLI's own default.
   Anything that must see every command belongs in a `PreToolUse` hook.
 - **`disallowedTools: ["Bash"]`** removes the tool definition entirely; a scoped rule like
-  `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode. This list is
-  empty today — see the note under How the constraint works — so the second half, `FULL_ACCESS` in
-  `canUseTool`, is what actually lets those tools run.
+  `Bash(rm *)` only blocks matching calls. Deny rules beat every permission mode. This list holds
+  one scoped rule and no whole tool the operator asked for — see the note under How the constraint
+  works — so the second half, `FULL_ACCESS` in `canUseTool`, is what actually lets those tools run.
 - **A tool's name in `disallowedTools` is not always the name `canUseTool` sees.** Subagents are
   `Task` in the deny list and arrive as `Agent` in the callback. Verified on a live turn; both are
   in `FULL_ACCESS`.
@@ -879,8 +1010,10 @@ the `.d.ts` is what ships. Do not infer this API from other agent frameworks.
 
 ## Open decisions
 
-- **Auth for the browser.** `POST /api/agent` is unauthenticated — anyone who can reach the port
-  can drive the agent. Fine on localhost; must be fixed before it is reachable by anyone else.
+- **Auth for the browser.** Solved — see Signing in. `BETTER_AUTH_SECRET` unset still means open,
+  which is right for a laptop and wrong for anything with a hostname. What is *not* solved is
+  authorisation: every signed-in address at the domain is equal, and gate 3's "a person clicked
+  approve" still does not record *which* person, though the session now knows.
 - **Token expiry.** `CLAUDE_CODE_OAUTH_TOKEN` is long-lived, not eternal. `hasAuth()` catches
   absence; expiry surfaces as a run-time error from the SDK. Re-run `claude setup-token`.
 - **Judge latency.** Every edit costs a judge call. If it drags, cache verdicts per (path, change)

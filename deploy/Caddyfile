@@ -1,0 +1,55 @@
+# becode's public face. Copy to /etc/caddy/Caddyfile, then `systemctl reload caddy`.
+#
+# Three names, all resolved by one wildcard A record (*.becode.v3.tix.do). A wildcard DNS record is
+# not a wildcard certificate: naming each host here means Caddy issues per-host certs over HTTP-01
+# and needs no DNS provider token. A new app port is a block here plus a reload — no DNS change.
+#
+# Caddy passes the client's Host through unchanged (nginx does not, by default), which is what
+# makes Vite's allowed-hosts entry match, and it upgrades WebSockets with no directive.
+
+# --- becode itself -----------------------------------------------------------------------------
+# No gate here: becode does its own. `proxy.ts` refuses every path but /login and /api/auth unless
+# the request carries a valid session, and it validates the session properly rather than checking
+# that a cookie exists. Putting a second gate in front would only break the sign-in page.
+becode.v3.tix.do {
+	reverse_proxy 127.0.0.1:4000 {
+		# GET /api/agent/stream is a long-lived event stream. Caddy detects text/event-stream on
+		# its own; this is the explicit version, and it also covers the NDJSON turn response.
+		flush_interval -1
+	}
+}
+
+# --- the apps under change ---------------------------------------------------------------------
+# One block per app port in the project recipe. The names are p<port> so that a single
+# BECODE_PUBLIC_URL template — https://p{port}.becode.v3.tix.do — describes all of them, and
+# becode needs to know nothing about any particular repo.
+#
+# These are dev servers becode started. They have no idea becode exists and no session of their
+# own, so the gate has to live out here: `forward_auth` asks becode on every request and serves
+# the preview only on a 2xx. The browser sends becode's cookie to these hosts because
+# BECODE_COOKIE_DOMAIN makes it a cookie for the parent domain.
+#
+# Without this the previews are open to anyone who guesses the hostname — and a preview is the
+# product, mid-change, with the staging API behind it.
+(gated) {
+	forward_auth 127.0.0.1:4000 {
+		uri /api/auth/gate
+		# Only the cookie matters; copying the whole request body to the gate would mean uploading
+		# every asset twice.
+		copy_headers x-becode-user
+	}
+}
+
+p3002.becode.v3.tix.do {
+	import gated
+	reverse_proxy 127.0.0.1:3002
+}
+
+p3000.becode.v3.tix.do {
+	import gated
+	reverse_proxy 127.0.0.1:3000
+}
+
+# A *service* with a declared port also gets a p<port> URL from BECODE_PUBLIC_URL, and the
+# workshop window prints it. There are no services in this deployment; if one is added, give it a
+# block here too, or the bar will name a host that resolves and answers nothing.
