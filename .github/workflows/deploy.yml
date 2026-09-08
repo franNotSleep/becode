@@ -52,13 +52,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # `github.repository` keeps the owner's capitalisation — franNotSleep/becode — and a Docker
+      # reference must be lowercase, so buildx refuses the tag before it builds anything. The
+      # owner is the only part that can carry a capital, but lowercase the whole string: it is
+      # what `docker pull` and `deploy/docker-compose.yml` already spell.
+      - id: image
+        run: echo "repo=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           # :main is what the server tracks; the sha tag is how you pin a rollback.
           tags: |
-            ghcr.io/${{ github.repository }}:main
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ steps.image.outputs.repo }}:main
+            ghcr.io/${{ steps.image.outputs.repo }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
