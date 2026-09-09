@@ -289,6 +289,33 @@ export async function run({
   }
 
   /**
+   * `cwd` has to be a directory that is actually there, and this is the only place that can say so.
+   *
+   * `spawn` reports a missing `cwd` as ENOENT *against the executable*, not against the directory.
+   * The SDK reads that code, stats its own binary, finds it present, and concludes the binary will
+   * not run: "Claude Code native binary at … exists but failed to launch. This usually means the
+   * binary does not match this system's libc — e.g. spawning a musl-linked binary on a glibc Linux
+   * host." There is no libc problem. Verified by pointing `cwd` at a directory that does not exist
+   * and getting that paragraph back word for word — after an afternoon spent on the Dockerfile.
+   *
+   * All four candidates above can be missing: a worktree deleted by hand, a project folder that
+   * moved, a `discoveryRoot` from another machine — and WORKTREE_ROOT itself, which is the fallback
+   * for a chat that has picked nothing yet and which **nothing creates until the first
+   * `git worktree add`**. That is how a freshly deployed becode fails: the very first message in
+   * the very first chat, with a message about musl.
+   */
+  await fs.mkdir(WORKTREE_ROOT, { recursive: true });
+  if (!(await fs.stat(turnCwd).then((s) => s.isDirectory(), () => false))) {
+    emit({
+      type: "error",
+      message:
+        `The directory this chat works in is gone: ${turnCwd}. ` +
+        `Nothing can run until it is back — re-clone it, or pick the project again from the sidebar.`,
+    });
+    return;
+  }
+
+  /**
    * Fail closed.
    *
    * A `canUseTool` that throws does not block the call — the tool runs anyway. So a network blip

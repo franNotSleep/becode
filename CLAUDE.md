@@ -281,6 +281,17 @@ work: `open_pull_request` sets the task back to `null`, so a second task in the 
 second worktree mid-turn and is wrong again. It also cuts a branch before gate 1 has judged the
 request.
 
+**And `cwd` has to exist, which is checked here because the SDK cannot tell you.** `spawn` reports
+a missing `cwd` as ENOENT *against the executable*, so the CLI stats its own binary, finds it, and
+reports `Claude Code native binary at … exists but failed to launch. This usually means the binary
+does not match this system's libc` — a paragraph about musl and glibc that sends you to the
+Dockerfile, where nothing is wrong. Every candidate for `turnCwd` can be missing: a worktree deleted
+by hand, a project folder that moved, a `discoveryRoot` written on another machine — and
+`WORKTREE_ROOT`, the fallback for a chat that has picked nothing yet, which **nothing creates until
+the first `git worktree add`**. That is how a freshly deployed becode fails: the first message of
+the first chat, with a libc error and no libc problem. `session.ts` creates the root and refuses a
+`turnCwd` that is not a directory, naming it.
+
 ## Stdin is the channel permissions are answered on
 
 `Tool permission request failed: AbortError: Stream closed` is the CLI refusing to *ask*. Its
