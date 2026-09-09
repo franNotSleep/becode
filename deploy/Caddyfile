@@ -31,23 +31,117 @@ becode.v3.tix.do {
 #
 # Without this the previews are open to anyone who guesses the hostname — and a preview is the
 # product, mid-change, with the staging API behind it.
+#
+# One thing this proxy cannot supply from out here: Next 16 refuses its own dev endpoints
+# (/_next/*, /__nextjs*) when the request carries an Origin that is not in `allowedDevOrigins`
+# (`blockCrossSiteDEV`). A WebSocket handshake always sends one, and so does the error overlay's
+# POST, so every preview host has to be named in the *target repo's* next.config. Nothing here can
+# stand in for it — stripping Origin would work, and would be this file learning a target repo's
+# framework.
+#
+# It is set in tixclient, and it has to be **committed** to keep working. Right now it is an
+# uncommitted edit in the source checkout, which is fine only because a chat with no task boots
+# its apps there. `git worktree add` copies tracked files at the committed state, so the first
+# real task boots a worktree without it, Next 403s the HMR socket, and the reload loop below is
+# back — per task, invisibly.
 (gated) {
 	forward_auth 127.0.0.1:4000 {
 		uri /api/auth/gate
 		# Only the cookie matters; copying the whole request body to the gate would mean uploading
 		# every asset twice.
 		copy_headers x-becode-user
+
+		# The gate must not be asked to speak WebSocket. forward_auth clones the incoming request
+		# and only rewrites its method and URI, so a `/_next/webpack-hmr` handshake reached
+		# /api/auth/gate still carrying `Connection: Upgrade`. Node closes any connection that asks
+		# for an upgrade it has no listener for, so becode's own server dropped it and Caddy turned
+		# the dead socket into 502 — before the preview's dev server was ever dialled, which is why
+		# the access log said the request never reached an upstream.
+		#
+		# Verified on the box: /api/auth/gate answers 401 plainly and 502 with `Connection: Upgrade`,
+		# on becode's own block, which has no forward_auth at all. So this is not specific to the
+		# gate; it is what Caddy does with any upgrade an upstream refuses.
+		#
+		# `header_up` runs on the *clone*, after Caddy has re-added the hop-by-hop headers it strips
+		# (`prepareRequest`, then `userOps.ApplyToRequest`), so the gate sees a plain GET while the
+		# original request — the one `handle_response` hands to the reverse_proxy below — keeps its
+		# upgrade and still gets a real WebSocket.
+		header_up -Connection
+		header_up -Upgrade
 	}
 }
 
 p3002.becode.v3.tix.do {
-	import gated
-	reverse_proxy 127.0.0.1:3002
+	# Every request the browser makes to a preview passes through here, which makes this the one
+	# place that sees what a dev server is actually being asked for. Next logs its own requests;
+	# the API calls a page makes are the half nobody could see.
+	log {
+		output file /var/lib/caddy/logs/p3002.log
+		format console
+	}
+
+	# Requests originating on the box itself skip the sign-in gate: they are the dev server's own
+	# server-side fetches and headless debugging, neither of which can carry a person's cookie.
+	# Only a process on this host can have a loopback source address, and it already runs the app.
+	@local remote_ip 127.0.0.1 ::1
+	handle @local {
+		reverse_proxy 127.0.0.1:3002 {
+			header_down +X-Becode-Upstream "127.0.0.1:3002 (tixclient dev server, loopback)"
+		}
+	}
+
+	handle {
+		import gated
+		reverse_proxy 127.0.0.1:3002 {
+			# Names the destination in the access log, so a line says where a request actually went
+			# rather than only which host it arrived on. Caddy does not log the upstream otherwise.
+			header_down +X-Becode-Upstream "127.0.0.1:3002 (tixclient dev server)"
+		}
+	}
 }
 
 p3000.becode.v3.tix.do {
 	import gated
-	reverse_proxy 127.0.0.1:3000
+	reverse_proxy 127.0.0.1:3000 {
+		header_down +X-Becode-Upstream "127.0.0.1:3000 (tixvendor dev server)"
+	}
+}
+
+# --- the API the previews talk to ----------------------------------------------------------
+# This one is tixdo-specific, and it is here rather than in the project recipe because it is a
+# hostname, which only the proxy can serve.
+#
+# tixclient derives its API from its own host — `<host>` -> `https://api.<host>` — so one build
+# serves every country, and the backend reads the country from that Host. It consults
+# NEXT_PUBLIC_API_BASE *only* when the host is localhost. So on a preview host the app asks for
+# `api.p3002.becode.v3.tix.do` no matter what the boot command sets, and the page it renders when
+# that name does not answer is Next's global error.
+#
+# The wildcard A record already points that name here, so answer it: proxy to staging's API and
+# translate the three things that are host-shaped.
+#
+#   Host    — the backend maps Host to a country (`country_host_map`); it must see its own name.
+#   Origin  — staging's CORS allowlist (`frontend_url`) knows the real storefronts, not this box.
+#             Swap it on the way up and swap the reply's allow-origin back on the way down, which
+#             is exactly what apps/tixvendor/vite.config.ts does for local dev.
+#   Cookie  — Set-Cookie scoped to `api.staging.v3.tix.do` would be dropped by the browser here,
+#             so strip the Domain attribute and let it default to the host it arrived on.
+#
+# Not gated: it carries no preview, and api.staging.v3.tix.do is already on the public internet.
+api.p3002.becode.v3.tix.do {
+	# The storefront's data calls are made by the *browser*, not by the dev server, so this log is
+	# the only server-side record of them: method, path, status, for every call a preview makes.
+	log {
+		output file /var/lib/caddy/logs/api-p3002.log
+		format console
+	}
+	reverse_proxy https://api.staging.v3.tix.do {
+		header_up Host api.staging.v3.tix.do
+		header_up Origin https://staging.v3.tix.do
+		header_down Access-Control-Allow-Origin https://p3002.becode.v3.tix.do
+		header_down Set-Cookie "Domain=[^;]+;?\s*" ""
+		header_down +X-Becode-Upstream "api.staging.v3.tix.do (staging API)"
+	}
 }
 
 # A *service* with a declared port also gets a p<port> URL from BECODE_PUBLIC_URL, and the
