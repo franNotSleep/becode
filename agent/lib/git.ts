@@ -45,6 +45,27 @@ export async function createWorktree(opts: {
   return { dir, branch };
 }
 
+/**
+ * Fast-forward the source checkout to the latest `origin/<baseBranch>`, or say why not.
+ *
+ * This is the person's real checkout, so it only ever moves forward: another branch checked out,
+ * uncommitted work, or a branch that has diverged is left exactly as it is. It never throws —
+ * being offline is no reason to refuse to show them their app.
+ */
+export async function pullLatest(repo: string, baseBranch: string): Promise<string> {
+  try {
+    const branch = await git(repo, "rev-parse", "--abbrev-ref", "HEAD");
+    if (branch !== baseBranch) return `skipped: the checkout is on ${branch}, not ${baseBranch}`;
+    if (await git(repo, "status", "--porcelain")) return "skipped: the checkout has uncommitted changes";
+
+    const before = await git(repo, "rev-parse", "HEAD");
+    await git(repo, "pull", "--ff-only", "origin", baseBranch);
+    return (await git(repo, "rev-parse", "HEAD")) === before ? "up to date" : "pulled";
+  } catch (error) {
+    return `skipped: ${(error as Error).message.split("\n")[0]}`;
+  }
+}
+
 /** The first `<slug>`, `<slug>-2`, `<slug>-3`… whose worktree directory is not taken. */
 async function freeName(projectId: string, taskId: string): Promise<{ branch: string; dir: string }> {
   for (let n = 1; ; n++) {

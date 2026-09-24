@@ -433,6 +433,13 @@ refused it — correctly, and uselessly. `POST /api/agent/run` calls the same `b
 is not a product change and the person clicking it is the person the policy protects. Apps run in
 the chat's worktree when it has a task, the source checkout when it does not.
 
+**Start pulls first.** `pullLatest` (`agent/lib/git.ts`) fast-forwards the **source checkout** to
+`origin/<baseBranch>` before booting, so the person is not looking at last week's code. It only
+moves forward: another branch checked out, uncommitted work, divergence or no network each skip
+it, and the window says why in one line — a failed pull never blocks the boot. A task's worktree is
+not touched (in-progress work; merging would change what gate 3 judges), and `run_project` does not
+pull at all — it runs after every edit.
+
 **A service with a declared port gets a URL too.** It used to be apps only, so the backend showed as
 "up" with nothing to click — the one server whose logs you want is the one you cannot open. `Server`
 now carries an explicit `app` flag, because `url` was doubling as "is this an app", which is what

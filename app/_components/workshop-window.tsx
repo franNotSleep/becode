@@ -75,6 +75,7 @@ export function WorkshopWindow({
   const [reloads, setReloads] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
 
   const refresh = useCallback(async () => {
     const next = await fetch("/api/agent/status")
@@ -110,16 +111,21 @@ export function WorkshopWindow({
   const run = async (action: "start" | "stop") => {
     setPending(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const response = await fetch("/api/agent/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, projectId, sessionId }),
       });
-      const body = (await response.json()) as { message?: string };
+      const body = (await response.json()) as { message?: string; pulled?: string };
       // First line only: `bootProject` appends the dead servers as JSON for the agent's benefit,
       // and the window already renders that output properly in the stage below.
       if (!response.ok) setError(body.message?.split("\n")[0] ?? "Could not start the project.");
+      // Start pulls the latest code first; when it could not, say so, or an old page looks current.
+      if (body.pulled?.startsWith("skipped: ")) {
+        setNotice(`Not updated to the latest code — ${body.pulled.slice("skipped: ".length)}.`);
+      }
       if (action === "stop") setSurface(DESIGN);
       await refresh();
     } catch {
@@ -208,6 +214,11 @@ export function WorkshopWindow({
         {error ? (
           <p className="shrink-0 border-destructive/20 border-b bg-destructive/5 px-5 py-2 text-destructive text-xs">
             {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="shrink-0 border-border/60 border-b px-5 py-2 text-muted-foreground text-xs">
+            {notice}
           </p>
         ) : null}
 

@@ -1,4 +1,5 @@
 import { findProject } from "@/agent/lib/db.ts";
+import { pullLatest } from "@/agent/lib/git.ts";
 import { chatFor } from "@/agent/lib/task.ts";
 import { bootProject, stopProject } from "@/agent/sdk/tools.ts";
 
@@ -15,6 +16,10 @@ export const dynamic = "force-dynamic";
  *
  * Apps run in the chat's worktree when it has a task, so the button shows the branch being changed;
  * with no task there is nothing to serve but the source checkout.
+ *
+ * Starting pulls first, so the person is looking at the latest base branch — the source checkout
+ * only. A task's worktree is in-progress work, and merging into it would change the diff gate 3
+ * judges. The agent's `run_project` does not pull: it runs after every edit.
  */
 export async function POST(request: Request) {
   const { projectId, sessionId, action } = (await request.json()) as {
@@ -30,7 +35,11 @@ export async function POST(request: Request) {
   try {
     const project = findProject(projectId);
     const { task } = chatFor(sessionId);
-    return Response.json(await bootProject(project, task?.worktree ?? project.path, task?.branch));
+    const pulled = await pullLatest(project.path, project.baseBranch);
+    return Response.json({
+      ...(await bootProject(project, task?.worktree ?? project.path, task?.branch)),
+      pulled,
+    });
   } catch (error) {
     return Response.json({ message: (error as Error).message }, { status: 500 });
   }
