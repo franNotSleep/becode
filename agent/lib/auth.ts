@@ -135,6 +135,12 @@ function build() {
     emailAndPassword: { enabled: false },
 
     advanced: {
+      // Not better-auth's default name, because the previews run better-auth apps too. tixvendor
+      // on p3000 sets its own `__Secure-better-auth.session_token` there, and ours is scoped to the
+      // parent domain, so that host gets both under one name. better-auth reads the cookie header
+      // last-wins, so each app reads the other's token: the gate refuses the preview, and the
+      // vendor's API is handed becode's session.
+      cookiePrefix: "becode",
       // One cookie for `becode.example.com` and every `p<port>.` preview under it, so a person signs
       // in once and the preview frames are covered by the same session — which is what lets the
       // proxy in front of those hosts ask becode whether to let the request through.
