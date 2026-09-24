@@ -13,7 +13,14 @@ import { changedFiles, diff, WORKTREE_ROOT } from "../lib/git.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { appendEvents, findProject, moveEvents } from "../lib/db.ts";
 import { canRead } from "../lib/reads.ts";
-import { type Chat, chatFor, inWorktree, rememberChat, resolveInWorktree } from "../lib/task.ts";
+import {
+  type Chat,
+  chatFor,
+  continueFrom,
+  inWorktree,
+  rememberChat,
+  resolveInWorktree,
+} from "../lib/task.ts";
 import { PUSH_REFUSAL, pushesUpstream } from "../lib/shell.ts";
 import { judgeChange } from "./judge.ts";
 import { becodeTools, TOOL } from "./tools.ts";
@@ -177,7 +184,10 @@ async function systemPrompt(chat: Chat): Promise<string> {
     : chat.discoveryRoot
       ? `\n\n===== This chat =====\n\nThe person pointed you at ${chat.discoveryRoot} to add it as a project. Work out how it boots and call \`propose_project\`.`
       : "";
-  return `${instructions}\n\n===== The "${role.name}" role's policy =====\n\nThis is what the person you work for may ask for. You do not interpret it — a separate judge rules on every request and every change against it. It is here so you can set expectations honestly.\n\n${role.text}${scope}`;
+  const lineage = chat.parent
+    ? `\n\nThis chat continues a change that already shipped: ${chat.parent.prUrl}${chat.parent.issue ? ` (${chat.parent.issue})` : ""}, on branch \`${chat.parent.branch}\`. That work is already in place — \`start_task\` branches from it and the pull request will be stacked on it. Build on top of it; do not redo it.`
+    : "";
+  return `${instructions}\n\n===== The "${role.name}" role's policy =====\n\nThis is what the person you work for may ask for. You do not interpret it — a separate judge rules on every request and every change against it. It is here so you can set expectations honestly.\n\n${role.text}${scope}${lineage}`;
 }
 
 /** What the judge sees for one edit: where it lands, and what it actually does. */
@@ -218,6 +228,8 @@ export type RunInput = {
   projectId?: string;
   /** Set when the person pointed becode at a repo to add. See the read grant in `canUseTool`. */
   discoveryPath?: string;
+  /** The session id of a shipped chat this new one continues. Only read on a chat's first turn. */
+  continueFrom?: string;
   /** Stopped only on purpose: `POST /api/agent/stop`, never a browser that went away. */
   signal: AbortSignal;
   /**
@@ -235,6 +247,7 @@ export async function run({
   sessionId,
   projectId,
   discoveryPath,
+  continueFrom: parentSessionId,
   signal,
   sink,
 }: RunInput): Promise<void> {
@@ -261,6 +274,7 @@ export async function run({
   const chat: Chat = chatFor(sessionId);
   if (projectId) chat.projectId = projectId;
   if (discoveryPath) chat.discoveryRoot = path.resolve(discoveryPath);
+  if (parentSessionId && !chat.parent && !chat.task) continueFrom(chat, parentSessionId);
 
   /**
    * Where the CLI will resolve every relative path this turn.

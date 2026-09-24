@@ -1,5 +1,5 @@
 import { listSessions } from "@anthropic-ai/claude-agent-sdk";
-import { allProjects } from "@/agent/lib/db.ts";
+import { allProjects, loadChatState } from "@/agent/lib/db.ts";
 import { git } from "@/agent/lib/git.ts";
 import { type ProjectDesign, projectDesign } from "@/agent/lib/impeccable.ts";
 
@@ -41,6 +41,8 @@ export async function GET(request: Request) {
             title: s.customTitle ?? s.summary,
             branch: s.gitBranch,
             lastModified: s.lastModified,
+            // The chat this one continues, so the sidebar can nest it. One indexed get per row.
+            parent: loadChatState(s.sessionId)?.parent?.sessionId,
           })),
       };
     }),

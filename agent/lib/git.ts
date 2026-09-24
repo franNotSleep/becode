@@ -74,6 +74,19 @@ export async function copyLocalEnv(repo: string, dir: string): Promise<void> {
   );
 }
 
+/**
+ * Whether `branch` still exists on origin.
+ *
+ * A continued chat is based on its parent's *pushed* branch. Once the parent merges and GitHub
+ * deletes it, the base branch already holds that work, so callers fall back to it.
+ */
+export async function remoteHasBranch(repo: string, branch: string): Promise<boolean> {
+  return git(repo, "ls-remote", "--exit-code", "--heads", "origin", branch).then(
+    () => true,
+    () => false,
+  );
+}
+
 export async function removeWorktree(repo: string, dir: string): Promise<void> {
   await git(repo, "worktree", "remove", "--force", dir);
 }

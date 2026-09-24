@@ -113,6 +113,10 @@ export async function fileIssue(input: {
   projectId: string;
   /** `Project.linearTeam` — the team key this project's issues belong to. */
   teamKey?: string;
+  /** The issue of the change this one continues. Filed as its sub-issue. */
+  parentIssueId?: string;
+  /** `TIX-123`, for the description. */
+  parentIssue?: string;
 }): Promise<Filed> {
   const { teamId, labelIds } = await target(input.teamKey);
 
@@ -121,11 +125,18 @@ export async function fileIssue(input: {
   const description = [
     "**Asked for**", "", input.request, "",
     "**What changed**", "", input.body, "",
+    ...(input.parentIssue ? [`Builds on ${input.parentIssue}.`, ""] : []),
     "---", "",
     `Project \`${input.projectId}\` · branch \`${input.branch}\` · filed by becode.`,
   ].join("\n");
 
-  const payload = await linear().createIssue({ teamId, title: input.title, description, labelIds });
+  const payload = await linear().createIssue({
+    teamId,
+    title: input.title,
+    description,
+    labelIds,
+    ...(input.parentIssueId ? { parentId: input.parentIssueId } : {}),
+  });
   const issue = await payload.issue;
   if (!issue) throw new Error("Linear accepted the issue but returned nothing.");
 

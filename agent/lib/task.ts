@@ -45,16 +45,38 @@ export type Chat = {
    * task after shipping the first.
    */
   shipped?: Shipped[];
+  /**
+   * The shipped change this chat builds on, when it was opened with "Continue on top of this".
+   *
+   * A copy of the parent's last `Shipped`, not a pointer to its row: deleting the parent chat must
+   * not strand the child without a base. Resolved on the server from the parent's session id — the
+   * browser never names the branch a worktree is cut from.
+   */
+  parent?: Parent;
 };
 
 /** One change that left the machine: the PR, and the Linear issue it was filed under. */
 export type Shipped = {
   /** `TIX-123`. Absent when Linear was unreachable or unconfigured — the PR still opened. */
   issue?: string;
+  /** Linear's UUID for the issue. `parentId` takes this, not the identifier. */
+  issueId?: string;
   issueUrl?: string;
   prUrl: string;
+  /** The branch as pushed — `becode/tix-123-<slug>`, not the local `becode/<slug>`. */
   branch: string;
+  /** Absent on entries recorded before continuing existed. */
+  projectId?: string;
   at: number;
+};
+
+export type Parent = {
+  sessionId: string;
+  projectId: string;
+  branch: string;
+  issue?: string;
+  issueId?: string;
+  prUrl: string;
 };
 
 const chats = new Map<string, Chat>();
@@ -108,6 +130,31 @@ export function setTask(chat: Chat, task: Task): void {
  */
 export function recordShipped(chat: Chat, entry: Shipped): void {
   chat.shipped = [...(chat.shipped ?? []), entry];
+  if (chat.sessionId) saveChatState(chat.sessionId, chat);
+}
+
+/**
+ * Make `chat` a continuation of what `parentSessionId` shipped last.
+ *
+ * Only a session id crosses from the browser; the branch, issue and project come from the parent's
+ * own stored state, so a request cannot point a worktree at an arbitrary ref.
+ */
+export function continueFrom(chat: Chat, parentSessionId: string): void {
+  const parent = chatFor(parentSessionId);
+  const last = parent.shipped?.at(-1);
+  if (!last) throw new Error("That chat has not shipped anything to continue from.");
+  const projectId = last.projectId ?? parent.projectId;
+  if (!projectId) throw new Error("That chat's shipped change has no project on record.");
+
+  chat.projectId = projectId;
+  chat.parent = {
+    sessionId: parent.sessionId ?? parentSessionId,
+    projectId,
+    branch: last.branch,
+    issue: last.issue,
+    issueId: last.issueId,
+    prUrl: last.prUrl,
+  };
   if (chat.sessionId) saveChatState(chat.sessionId, chat);
 }
 

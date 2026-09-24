@@ -1,6 +1,13 @@
 "use client";
 
-import { AlertCircleIcon, CheckIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react";
+import {
+  AlertCircleIcon,
+  CheckIcon,
+  FileTextIcon,
+  GitBranchPlusIcon,
+  PaperclipIcon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ACCEPT, type Attachment, isAllowed, MAX_FILES } from "@/agent/lib/attachments.ts";
 import { ThinkingShimmer } from "@/components/agents/loading-states/thinking-shimmer";
@@ -13,7 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { suggest } from "@/lib/skill-suggestions";
 import { tokenize, typingSkill } from "@/lib/skill-tokens";
 import { cn } from "@/lib/utils";
-import { AgentMessage } from "./agent-message";
+import { AgentMessage, parseShipped } from "./agent-message";
 import { ChatSidebar } from "./chat-sidebar";
 import { useBecodeAgent } from "./use-becode-agent";
 import { WorkshopWindow } from "./workshop-window";
@@ -49,6 +56,27 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
       }
     }
     return ready;
+  }, [agent.messages]);
+
+  /**
+   * The change this chat shipped last, if nothing has been edited since — what "Continue on top
+   * of this" builds on. The inverse of `shippable`, read the same way. The issue and PR are for
+   * the child's header only; the server resolves the branch from the session id, and the output
+   * may have been truncated past parsing, which costs the label and nothing else.
+   */
+  const continuable = useMemo(() => {
+    let shipped: { issue?: string; prUrl?: string } | undefined;
+    for (const message of agent.messages) {
+      for (const part of message.parts) {
+        if (part.type !== "tool" || part.state !== "success") continue;
+        if (part.name === "Edit" || part.name === "Write") shipped = undefined;
+        else if (part.name === "mcp__becode__open_pull_request") {
+          const result = parseShipped(part.output);
+          shipped = { issue: result?.issue, prUrl: result?.url };
+        }
+      }
+    }
+    return shipped;
   }, [agent.messages]);
 
   const [liveBranch, setLiveBranch] = useState<string>();
@@ -142,6 +170,22 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
           >
             <CheckIcon className="size-3.5" />
             Ship this change
+          </Button>
+        </div>
+      ) : continuable && agent.openChatId ? (
+        <div className="mb-2 flex">
+          <Button
+            disabled={isBusy}
+            onClick={() =>
+              agent.openChatId &&
+              agent.continueChat({ sessionId: agent.openChatId, ...continuable }, agent.projectId)
+            }
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <GitBranchPlusIcon className="size-3.5" />
+            Continue on top of this
           </Button>
         </div>
       ) : null}
@@ -301,6 +345,9 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
           <span className="truncate text-muted-foreground text-xs">
             {agent.projectId ? `${AGENT_NAME} · ${agent.projectId}` : AGENT_NAME}
           </span>
+          {agent.parent ? (
+            <ParentBadge issue={agent.parent.issue} prUrl={agent.parent.prUrl} />
+          ) : null}
         </header>
 
         {agent.error ? (
@@ -357,7 +404,9 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
             <div className="flex flex-col gap-3">
               <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
               <p className="text-balance text-muted-foreground text-sm">
-                {agent.projectId
+                {agent.parent
+                  ? `This chat builds on ${agent.parent.issue ?? "the change you just shipped"}. Describe what to add on top — it gets its own branch and its own pull request.`
+                  : agent.projectId
                   ? `Describe a change to ${agent.projectId}. You will see it running here before it becomes a pull request.`
                   : "Describe a change. You will see it running here before it becomes a pull request."}
               </p>
@@ -373,6 +422,24 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
         sessionId={agent.openChatId}
       />
     </div>
+  );
+}
+
+/** "Builds on TIX-123" — the change a continued chat is stacked on, linked to its PR. */
+function ParentBadge({ issue, prUrl }: { readonly issue?: string; readonly prUrl?: string }) {
+  const label = (
+    <>
+      <GitBranchPlusIcon className="size-3" />
+      Builds on {issue ?? "a shipped change"}
+    </>
+  );
+  const className = "ml-auto flex shrink-0 items-center gap-1 text-muted-foreground text-xs";
+  return prUrl ? (
+    <a className={cn(className, "hover:text-foreground")} href={prUrl} rel="noreferrer" target="_blank">
+      {label}
+    </a>
+  ) : (
+    <span className={className}>{label}</span>
   );
 }
 

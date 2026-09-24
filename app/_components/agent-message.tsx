@@ -135,14 +135,9 @@ export function AgentMessage({
  * same reason `shippable` in agent-chat.tsx spells it out: that module spawns processes.
  */
 function shippedLinks(name: string, output?: string): CitationItem[] {
-  if (name !== "mcp__becode__open_pull_request" || !output) return [];
-
-  let result: { url?: string; issue?: string; issueUrl?: string };
-  try {
-    result = JSON.parse(output);
-  } catch {
-    return [];
-  }
+  if (name !== "mcp__becode__open_pull_request") return [];
+  const result = parseShipped(output);
+  if (!result) return [];
 
   const items: CitationItem[] = [];
   if (result.issue && result.issueUrl) {
@@ -152,6 +147,18 @@ function shippedLinks(name: string, output?: string): CitationItem[] {
     items.push({ id: "pr", title: "Pull request", domain: "github.com", url: result.url });
   }
   return items;
+}
+
+/** `open_pull_request`'s result, when it survived truncation intact. */
+export function parseShipped(
+  output?: string,
+): { url?: string; issue?: string; issueUrl?: string } | undefined {
+  if (!output) return undefined;
+  try {
+    return JSON.parse(output);
+  } catch {
+    return undefined;
+  }
 }
 
 function plainText(message: BecodeMessage): string {

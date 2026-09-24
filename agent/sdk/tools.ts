@@ -9,7 +9,7 @@ import { addProject, allProjects, findProject } from "../lib/db.ts";
 import { append, emptyBuffer, type LogBuffer, since, tail } from "../lib/logs.ts";
 import { holders, isListening, release } from "../lib/ports.ts";
 import { appUrls, publicUrl, type Project } from "../lib/projects.ts";
-import { changedFiles, createWorktree, git } from "../lib/git.ts";
+import { changedFiles, createWorktree, git, remoteHasBranch } from "../lib/git.ts";
 import { impeccableContext, type ImpeccableState } from "../lib/impeccable.ts";
 import { rolePolicy } from "../lib/roles.ts";
 import { fileIssue, hasLinear } from "../lib/linear.ts";
@@ -105,11 +105,12 @@ export function becodeTools(chat: Chat) {
         return reply({ started: false, refused: verdict.reason });
       }
 
+      const base = await baseFor(project.path, project.baseBranch);
       const { dir, branch } = await createWorktree({
         repo: project.path,
         projectId: id,
         taskId: slug,
-        baseBranch: project.baseBranch,
+        baseBranch: base,
       });
 
       setTask(chat, { projectId: id, request, worktree: dir, branch });
@@ -126,6 +127,14 @@ export function becodeTools(chat: Chat) {
       return reply({
         started: true,
         branch,
+        builtOn: base,
+        ...(chat.parent && base !== chat.parent.branch
+          ? {
+              note:
+                `${chat.parent.branch} is gone from origin — the change this chat continues has ` +
+                `merged, so this starts from ${base}, which already contains it.`,
+            }
+          : {}),
         worktree: dir,
         designSystem,
         impeccable,
@@ -296,6 +305,8 @@ export function becodeTools(chat: Chat) {
             branch: current.branch,
             projectId: current.projectId,
             teamKey: project.linearTeam,
+            parentIssueId: chat.parent?.issueId,
+            parentIssue: chat.parent?.issue,
           }).catch((error: Error) => error)
         : undefined;
       const filed = issue instanceof Error ? undefined : issue;
@@ -310,18 +321,24 @@ export function becodeTools(chat: Chat) {
 
       await git(current.worktree, "push", "--set-upstream", "origin", `HEAD:refs/heads/${head}`);
 
+      // Stacked on the parent's branch while it is open, so this PR's diff is only this change.
+      // GitHub retargets it to the base branch by itself when the parent merges.
+      const prBase = await baseFor(project.path, project.baseBranch);
+      const prBody = chat.parent ? `${body}\n\nStacked on ${chat.parent.prUrl}` : body;
       const { stdout } = await exec(
         "gh",
-        ["pr", "create", "--base", project.baseBranch, "--head", head, "--title", title, "--body", body],
+        ["pr", "create", "--base", prBase, "--head", head, "--title", title, "--body", prBody],
         { cwd: current.worktree },
       );
 
       const url = stdout.trim().split("\n").pop() ?? "";
       recordShipped(chat, {
         issue: filed?.identifier,
+        issueId: filed?.id,
         issueUrl: filed?.url,
         prUrl: url,
         branch: head,
+        projectId: current.projectId,
         at: Date.now(),
       });
       setTask(chat, null);
@@ -345,6 +362,15 @@ export function becodeTools(chat: Chat) {
       });
     },
   );
+
+  /**
+   * The branch this chat's work sits on: the parent's pushed branch while it is still on origin,
+   * the project's base branch otherwise — once the parent merges, that is where its work lives.
+   */
+  async function baseFor(repo: string, projectBase: string): Promise<string> {
+    if (chat.parent && (await remoteHasBranch(repo, chat.parent.branch))) return chat.parent.branch;
+    return projectBase;
+  }
 
   return createSdkMcpServer({
     name: "becode",

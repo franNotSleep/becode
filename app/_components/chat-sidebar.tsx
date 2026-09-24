@@ -2,6 +2,7 @@
 
 import {
   ChevronRightIcon,
+  CornerDownRightIcon,
   FolderPlusIcon,
   MessageSquareIcon,
   PlusIcon,
@@ -23,8 +24,40 @@ export type ProjectChats = {
   id: string;
   /** What becode knows about how this project looks. Rendered on the row by `DesignSystemCard`. */
   design: ProjectDesign;
-  chats: { sessionId: string; title: string; branch?: string; lastModified: number }[];
+  chats: ProjectChat[];
 };
+
+type ProjectChat = {
+  sessionId: string;
+  title: string;
+  branch?: string;
+  lastModified: number;
+  /** The chat this one continues ("Continue on top of this"). */
+  parent?: string;
+};
+
+/**
+ * Each chat followed by the chats that continue it, depth-first, keeping the list's own order.
+ * A chat whose parent is not listed — deleted, or past the limit — sits at the top level.
+ */
+function nested(chats: ProjectChat[]): { chat: ProjectChat; depth: number }[] {
+  const listed = new Set(chats.map((chat) => chat.sessionId));
+  const children = new Map<string, ProjectChat[]>();
+  for (const chat of chats) {
+    if (!chat.parent || !listed.has(chat.parent)) continue;
+    children.set(chat.parent, [...(children.get(chat.parent) ?? []), chat]);
+  }
+  const out: { chat: ProjectChat; depth: number }[] = [];
+  const seen = new Set<string>();
+  const visit = (chat: ProjectChat, depth: number) => {
+    if (seen.has(chat.sessionId)) return;
+    seen.add(chat.sessionId);
+    out.push({ chat, depth });
+    for (const child of children.get(chat.sessionId) ?? []) visit(child, depth + 1);
+  };
+  for (const chat of chats) if (!chat.parent || !listed.has(chat.parent)) visit(chat, 0);
+  return out;
+}
 
 /**
  * Projects, and the chats under each — collapsed to a rail until you reach for it.
@@ -225,7 +258,7 @@ export function ChatSidebar({
                     </div>
 
                     {expanded
-                      ? project.chats.map((chat) => (
+                      ? nested(project.chats).map(({ chat, depth }) => (
                           <div
                             className={cn(
                               "group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-muted/60",
@@ -237,7 +270,8 @@ export function ChatSidebar({
                               <input
                                 aria-label="Chat name"
                                 autoFocus
-                                className="min-w-0 flex-1 bg-transparent py-1.5 pl-8 text-sm outline-none"
+                                className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none"
+                                style={{ paddingLeft: indent(depth) }}
                                 defaultValue={chat.title}
                                 onBlur={(event) => void rename(chat.sessionId, event.target.value)}
                                 onKeyDown={(event) => {
@@ -247,7 +281,8 @@ export function ChatSidebar({
                               />
                             ) : (
                               <button
-                                className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-8 text-left text-sm"
+                                className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left text-sm"
+                                style={{ paddingLeft: indent(depth) }}
                                 onClick={() => {
                                   onOpenChat(chat.sessionId, project.id);
                                   setOpen(false);
@@ -261,6 +296,8 @@ export function ChatSidebar({
                                     aria-label="showing in the window"
                                     className="size-1.5 shrink-0 rounded-full bg-emerald-500"
                                   />
+                                ) : depth > 0 ? (
+                                  <CornerDownRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
                                 ) : (
                                   <MessageSquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
                                 )}
@@ -295,6 +332,11 @@ export function ChatSidebar({
       </AnimatePresence>
     </div>
   );
+}
+
+/** `pl-8` for a top-level chat, one step further per level it continues. */
+function indent(depth: number): string {
+  return `${2 + depth * 0.875}rem`;
 }
 
 /** A rail control. Square, per the split: the pill is spent on the window's Start. */

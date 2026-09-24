@@ -652,6 +652,28 @@ moment both references first exist is the moment `Task` is destroyed. The transc
 through `@beui/citations` in `agent-message.tsx`, derived from the `open_pull_request` tool row
 rather than a new event, so a reopened chat shows them with no second read path.
 
+## Continuing a shipped change
+
+Once a chat has shipped, **Continue on top of this** (above the composer, derived from the last
+successful `open_pull_request` with no `Edit`/`Write` after it) opens an empty **child chat**. The
+person types what to build next — gate 1 still needs a real request, so nothing is sent for them.
+
+- **Only a session id crosses from the browser.** `continueFrom` in `agent/lib/task.ts` reads the
+  parent's last `Shipped` and copies it into `Chat.parent`; the branch a worktree is cut from is
+  never something a request can name. It is a copy, so deleting the parent leaves the child intact.
+- **The base is the *pushed* branch** (`becode/tix-123-<slug>`), not the parent's local one
+  (`becode/<slug>`) — they differ because `open_pull_request` pushes under the Linear name without
+  renaming. `createWorktree` fetches and resolves `origin/<branch>`.
+- **The PR is stacked**: `--base` is the parent's branch, so its diff is only the child's work, and
+  GitHub retargets it when the parent merges. If the parent branch is already gone from origin
+  (`remoteHasBranch`), both the worktree and the PR fall back to `project.baseBranch`, which by then
+  holds the parent's work. Still never the default branch while stacked, never a push to it.
+- **Linear files the child as a sub-issue** (`parentId`), which is why `Shipped` now keeps the
+  issue's UUID beside its identifier. Entries recorded before that have none, and their children
+  are filed unparented rather than failing.
+- The sidebar nests children under their parent from `parent` on `GET /api/sessions`, and a child's
+  header links the parent PR from `GET /api/sessions/[id]`.
+
 ## Skills
 
 Two sets, different audiences. Both are committed, so a clone gets them.

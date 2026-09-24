@@ -4,23 +4,31 @@ import { follow, isRunning, startTurn } from "@/agent/sdk/live.ts";
 import { ndjson } from "@/agent/sdk/ndjson.ts";
 import type { TranscriptFile } from "@/agent/sdk/session.ts";
 import { backfillEvents } from "@/agent/sdk/transcript.ts";
+import { chatFor } from "@/agent/lib/task.ts";
 
 // The agent touches the host filesystem and spawns dev servers — it is not edge-compatible.
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const { message, sessionId, attachments, projectId, discoveryPath, turnId } =
+  const { message, sessionId, attachments, projectId, discoveryPath, continueFrom, turnId } =
     (await request.json()) as {
       message?: unknown;
       sessionId?: unknown;
       attachments?: unknown;
       projectId?: unknown;
       discoveryPath?: unknown;
+      continueFrom?: unknown;
       turnId?: unknown;
     };
 
   if (typeof message !== "string" || message.trim().length === 0) {
     return Response.json({ message: "message is required" }, { status: 400 });
+  }
+
+  // Checked here rather than inside the turn, so a chat with nothing shipped is a readable 400.
+  const parent = typeof continueFrom === "string" && continueFrom ? continueFrom : undefined;
+  if (parent && !chatFor(parent).shipped?.length) {
+    return Response.json({ message: "That chat has not shipped anything to continue from." }, { status: 400 });
   }
 
   // The browser picks the files, so the allowlist is enforced here too, not only by `accept`.
@@ -74,6 +82,7 @@ export async function POST(request: Request) {
     sessionId: resumed,
     projectId: typeof projectId === "string" ? projectId : undefined,
     discoveryPath: typeof discoveryPath === "string" ? discoveryPath : undefined,
+    continueFrom: parent,
   });
 
   return ndjson(follow(turn));

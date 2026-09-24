@@ -15,7 +15,7 @@ process.env.BECODE_DB = file;
 
 const { addProject, allProjects, appendEvents, deleteEvents, findProject, loadChatState, loadEvents, moveEvents, saveProject } =
   await import("./db.ts");
-const { chatFor, forgetChat, rememberChat, setTask } = await import("./task.ts");
+const { chatFor, continueFrom, forgetChat, recordShipped, rememberChat, setTask } = await import("./task.ts");
 const { projects: seed } = await import("../../becode.projects.ts");
 
 // First open on a fresh machine takes becode.projects.ts as the starting set, whole. That set is
@@ -85,6 +85,28 @@ setTask(chat, { projectId: "scraper", request: "again", worktree, branch: "becod
 assert.equal(forgetChat("session-1")?.branch, "becode/again");
 assert.equal(loadChatState("session-1"), undefined, "the row goes, not just the cache entry");
 assert.notEqual(loadChatState("session-2"), undefined, "a sibling id is not collateral");
+
+// Continuing a shipped change. The child copies what the parent shipped last — the pushed branch,
+// the issue UUID — and keeps it after the parent is deleted, because it is a copy.
+const shipper = chatFor(undefined);
+rememberChat(shipper, "parent-1");
+recordShipped(shipper, {
+  issue: "TIX-1", issueId: "uuid-1", prUrl: "https://gh/pr/1", branch: "becode/tix-1-first",
+  projectId: "scraper", at: 1,
+});
+recordShipped(shipper, {
+  issue: "TIX-2", issueId: "uuid-2", prUrl: "https://gh/pr/2", branch: "becode/tix-2-second",
+  projectId: "scraper", at: 2,
+});
+const child = chatFor(undefined);
+continueFrom(child, "parent-1");
+rememberChat(child, "child-1");
+assert.equal(child.projectId, "scraper", "the project comes from the parent, not the browser");
+assert.equal(child.parent?.branch, "becode/tix-2-second", "the last thing shipped is the base");
+forgetChat("parent-1");
+const { chatFor: afterParentGone } = await reopen(3);
+assert.equal(afterParentGone("child-1").parent?.issueId, "uuid-2", "the child outlives its parent");
+assert.throws(() => continueFrom(chatFor(undefined), "never-shipped"), /not shipped anything/);
 
 // The conversation. Events go in as they stream and come back in the order they were produced —
 // an image is a URL here, never base64, which is the whole reason this table exists.

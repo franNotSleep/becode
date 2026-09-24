@@ -47,6 +47,9 @@ export type AgentStatus = "ready" | "submitted" | "streaming";
 let counter = 0;
 const nextId = () => `m${++counter}`;
 
+/** The shipped change a continued chat builds on, as the header links to it. */
+export type ParentLink = { sessionId: string; issue?: string; prUrl?: string };
+
 export function useBecodeAgent() {
   const [messages, setMessages] = useState<BecodeMessage[]>([]);
   const [status, setStatus] = useState<AgentStatus>("ready");
@@ -65,12 +68,17 @@ export function useBecodeAgent() {
   const turnKey = useRef<string | undefined>(undefined);
   /** A ref, not state: `addProject` sets it and sends in the same tick. */
   const discoveryPath = useRef<string | undefined>(undefined);
+  /** Sent with a continued chat's first message; the server resolves the branch from it. */
+  const continueFrom = useRef<string | undefined>(undefined);
+  const [parent, setParent] = useState<ParentLink>();
 
   const apply = useCallback((event: AgentEvent) => {
     if (event.type === "session") {
       sessionId.current = event.sessionId;
       turnKey.current = event.sessionId;
       setOpenChatId(event.sessionId);
+      // Recorded on the chat now; later turns resume it and need not say it again.
+      continueFrom.current = undefined;
       return;
     }
     if (event.type === "error") {
@@ -118,6 +126,7 @@ export function useBecodeAgent() {
             sessionId: sessionId.current,
             projectId,
             discoveryPath: discoveryPath.current,
+            continueFrom: continueFrom.current,
             attachments,
             turnId,
           }),
@@ -163,6 +172,26 @@ export function useBecodeAgent() {
     abort.current?.abort();
     sessionId.current = undefined;
     discoveryPath.current = undefined;
+    continueFrom.current = undefined;
+    setParent(undefined);
+    setOpenChatId(undefined);
+    setProjectId(project);
+    setMessages([]);
+    setError(undefined);
+  }, []);
+
+  /**
+   * An empty chat that builds on what `link.sessionId` shipped.
+   *
+   * Nothing is sent: the person says what to build next, and gate 1 judges that. The branch is cut
+   * at `start_task`, off the parent's pushed branch.
+   */
+  const continueChat = useCallback((link: ParentLink, project?: string) => {
+    abort.current?.abort();
+    sessionId.current = undefined;
+    discoveryPath.current = undefined;
+    continueFrom.current = link.sessionId;
+    setParent(link);
     setOpenChatId(undefined);
     setProjectId(project);
     setMessages([]);
@@ -179,6 +208,8 @@ export function useBecodeAgent() {
     async (id: string, project?: string) => {
       abort.current?.abort();
       discoveryPath.current = undefined;
+      continueFrom.current = undefined;
+      setParent(undefined);
       setError(undefined);
       setProjectId(project);
       setOpenChatId(id);
@@ -190,10 +221,12 @@ export function useBecodeAgent() {
         setError("That chat could not be opened.");
         return;
       }
-      const { events, cursor } = (await response.json()) as {
+      const { events, cursor, parent: link } = (await response.json()) as {
         events: AgentEvent[];
         cursor?: number;
+        parent?: ParentLink;
       };
+      setParent(link);
       setMessages(events.reduce(reduce, []));
 
       // The chat may still be working: the turn belongs to the server, not to whichever tab
@@ -231,6 +264,8 @@ export function useBecodeAgent() {
       abort.current?.abort();
       sessionId.current = undefined;
       discoveryPath.current = repoPath;
+      continueFrom.current = undefined;
+      setParent(undefined);
       setOpenChatId(undefined);
       setProjectId(undefined);
       setMessages([]);
@@ -276,11 +311,13 @@ export function useBecodeAgent() {
     error,
     projectId,
     openChatId,
+    parent,
     send,
     cancel,
     respond,
     answer,
     startNew,
+    continueChat,
     open,
     addProject,
   };
