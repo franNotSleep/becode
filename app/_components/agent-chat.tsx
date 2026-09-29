@@ -5,6 +5,8 @@ import {
   CheckIcon,
   FileTextIcon,
   GitBranchPlusIcon,
+  MicIcon,
+  MicOffIcon,
   PaperclipIcon,
   XIcon,
 } from "lucide-react";
@@ -23,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { AgentMessage, parseShipped } from "./agent-message";
 import { ChatSidebar } from "./chat-sidebar";
 import { useBecodeAgent } from "./use-becode-agent";
+import { useDictation } from "./use-dictation";
 import { WorkshopWindow } from "./workshop-window";
 
 const AGENT_NAME = "becode";
@@ -123,6 +126,11 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
     composerBox.current?.querySelector("textarea")?.focus();
   };
 
+  /** Each spoken phrase lands at the end of the draft, the same place a chip's sentence goes. */
+  const dictation = useDictation((phrase) =>
+    setDraft((previous) => (previous.trimEnd() + " " + phrase).trimStart()),
+  );
+
   /** Same allowlist the route enforces; this half only exists so a mistake reads immediately. */
   const addFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -154,6 +162,7 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
     setAttachments([]);
     setAttachError(undefined);
     setDraft("");
+    dictation.stop();
     await agent.send(text, sending);
   };
 
@@ -264,17 +273,32 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
         <PromptInput
           className="border-0 bg-transparent p-0 focus-within:border-transparent"
           leadingAction={
-            <Button
-              aria-label="Attach a file"
-              className="size-8 rounded-full"
-              disabled={isBusy}
-              onClick={() => fileInput.current?.click()}
-              size="icon"
-              type="button"
-              variant="ghost"
-            >
-              <PaperclipIcon className="size-4" />
-            </Button>
+            <div className="flex">
+              <Button
+                aria-label="Attach a file"
+                className="size-8 rounded-full"
+                disabled={isBusy}
+                onClick={() => fileInput.current?.click()}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <PaperclipIcon className="size-4" />
+              </Button>
+              {dictation.supported ? (
+                <Button
+                  aria-label={dictation.listening ? "Stop dictating" : "Dictate"}
+                  aria-pressed={dictation.listening}
+                  className={cn("size-8 rounded-full", dictation.listening && "bg-muted text-destructive")}
+                  onClick={dictation.toggle}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  {dictation.listening ? <MicOffIcon className="size-4" /> : <MicIcon className="size-4" />}
+                </Button>
+              ) : null}
+            </div>
           }
           loading={isBusy}
           onPaste={(event) => {
@@ -318,8 +342,8 @@ export function AgentChat({ skills }: { readonly skills: string[] }) {
         type="file"
       />
 
-      {attachError ? (
-        <p className="mt-2 px-1 text-destructive text-xs">{attachError}</p>
+      {attachError || dictation.error ? (
+        <p className="mt-2 px-1 text-destructive text-xs">{attachError ?? dictation.error}</p>
       ) : null}
     </div>
   );
