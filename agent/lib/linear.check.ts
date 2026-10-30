@@ -8,7 +8,7 @@
  * node --experimental-strip-types agent/lib/linear.check.ts
  */
 import assert from "node:assert/strict";
-import { pickTeam } from "./linear.ts";
+import { pickTeam, requestDescription } from "./linear.ts";
 
 const TWO = [{ key: "AIR" }, { key: "TIX" }];
 
@@ -25,4 +25,16 @@ assert.throws(() => pickTeam(TWO, "NOPE"), /sees no team "NOPE"/);
 // The one that used to pass silently: unset, more than one team, no filing.
 assert.throws(() => pickTeam(TWO), /more than one team \(AIR, TIX\)/);
 
-console.log("linear: team choice ok");
+// A refused request is filed verbatim, with the judge's own reason beside it — the person who
+// picks it up has to read what was really asked, not the agent's softened version.
+const filed = requestDescription({
+  request: "Make every ticket free this weekend",
+  reason: "Pricing is outside marketing's remit.",
+  projectId: "tix",
+  role: "marketing",
+});
+assert.match(filed, /\*\*Asked for\*\*\n\nMake every ticket free this weekend\n/);
+assert.match(filed, /\*\*Why becode could not do it\*\*\n\nPricing is outside marketing's remit\./);
+assert.match(filed, /Project `tix` · outside the `marketing` role's policy/);
+
+console.log("linear: team choice and refused-request description ok");

@@ -3,7 +3,9 @@ import { LinearClient } from "@linear/sdk";
 /**
  * Linear, for traceability only.
  *
- * becode files one issue per pull request, at PR time — never at `start_task`. An issue created
+ * becode files one issue per pull request, at PR time — never at `start_task`. The one other issue
+ * it files is a refused request, handed to the team (`fileRequest`), and only once a person has
+ * clicked approve on it. An issue created
  * when a chat starts would be an outbound write to a shared workspace on the weakest gate becode
  * has (gate 1 judges the agent's *restatement* of the request), and every abandoned experiment
  * would leave one behind. By the time `open_pull_request` runs, gate 3 has judged the real diff
@@ -136,6 +138,53 @@ export async function fileIssue(input: {
     description,
     labelIds,
     ...(input.parentIssueId ? { parentId: input.parentIssueId } : {}),
+  });
+  const issue = await payload.issue;
+  if (!issue) throw new Error("Linear accepted the issue but returned nothing.");
+
+  return { id: issue.id, identifier: issue.identifier, url: issue.url };
+}
+
+/**
+ * The description of a refused request. Pure, so `check:linear` can read it without a network.
+ *
+ * The ask is verbatim and the reason is the judge's own — both recorded at the gate, not written
+ * by the agent — so whoever picks this up reads what was really asked and why it stopped.
+ */
+export function requestDescription(input: {
+  request: string;
+  reason: string;
+  projectId: string;
+  role: string;
+}): string {
+  return [
+    "**Asked for**", "", input.request, "",
+    "**Why becode could not do it**", "", input.reason, "",
+    "---", "",
+    `Project \`${input.projectId}\` · outside the \`${input.role}\` role's policy · filed by becode.`,
+  ].join("\n");
+}
+
+/**
+ * Hand a request becode refused to someone who is allowed to do it.
+ *
+ * Same team and label as a PR's issue, and unassigned in the default state for the same reason:
+ * it is for whoever triages. There is no branch — nothing was built.
+ */
+export async function fileRequest(input: {
+  title: string;
+  request: string;
+  reason: string;
+  projectId: string;
+  role: string;
+  teamKey?: string;
+}): Promise<Filed> {
+  const { teamId, labelIds } = await target(input.teamKey);
+  const payload = await linear().createIssue({
+    teamId,
+    title: input.title,
+    description: requestDescription(input),
+    labelIds,
   });
   const issue = await payload.issue;
   if (!issue) throw new Error("Linear accepted the issue but returned nothing.");

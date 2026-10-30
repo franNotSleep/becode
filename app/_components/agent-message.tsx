@@ -135,7 +135,8 @@ export function AgentMessage({
  * same reason `shippable` in agent-chat.tsx spells it out: that module spawns processes.
  */
 function shippedLinks(name: string, output?: string): CitationItem[] {
-  if (name !== "mcp__becode__open_pull_request") return [];
+  // `file_request` hands a refused ask to the team: an issue, and no pull request.
+  if (name !== "mcp__becode__open_pull_request" && name !== "mcp__becode__file_request") return [];
   const result = parseShipped(output);
   if (!result) return [];
 

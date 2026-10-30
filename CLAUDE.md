@@ -659,6 +659,16 @@ moment both references first exist is the moment `Task` is destroyed. The transc
 through `@beui/citations` in `agent-message.tsx`, derived from the `open_pull_request` tool row
 rather than a new event, so a reopened chat shows them with no second read path.
 
+**A refusal can be handed to the team.** When the judge refuses — the request at gate 1, an edit
+at gate 2, the diff at gate 3 — becode records the refusal on the chat (`Chat.refusal`) and tells
+the agent to call `file_request`. That tool's approval card *is* the offer: one click files a
+Linear issue (`fileRequest`, same team and label as a PR's) holding the verbatim ask and the
+judge's reason, for someone who is allowed to do it. Two things keep it from being a general
+"write to Linear" tool: it is denied when nothing was refused, and its content is what becode
+recorded at the gate — the agent supplies only a title. A person approves first because it is an
+outbound write to a shared workspace, the same reason a PR's issue waits for gate 3. Under
+`judge: false` nothing is refused, so this never fires.
+
 ## Continuing a shipped change
 
 Once a chat has shipped, **Continue on top of this** (above the composer, derived from the last

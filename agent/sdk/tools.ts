@@ -12,11 +12,24 @@ import { appUrls, publicUrl, type Project } from "../lib/projects.ts";
 import { changedFiles, createWorktree, git, remoteHasBranch } from "../lib/git.ts";
 import { impeccableContext, type ImpeccableState } from "../lib/impeccable.ts";
 import { rolePolicy } from "../lib/roles.ts";
-import { fileIssue, hasLinear } from "../lib/linear.ts";
+import { fileIssue, fileRequest, hasLinear } from "../lib/linear.ts";
 import { activeTask, type Chat, recordShipped, resolveInWorktree, setTask } from "../lib/task.ts";
 import { judgeRequest } from "./judge.ts";
 
 const exec = promisify(execFile);
+
+/**
+ * What the agent is told after the judge refuses something, so a "no" is not a dead end.
+ *
+ * Empty without Linear: there is nowhere to file it, and offering would only produce an error.
+ * The approval card `file_request` raises *is* the offer — one click, no extra question.
+ */
+export function offerRequest(): string {
+  return hasLinear()
+    ? " Then call file_request so the person can hand this to someone who is allowed to do it — " +
+        "they confirm before anything is filed."
+    : "";
+}
 
 /** Everything a tool returns reaches the model as text. */
 const reply = (value: unknown) => ({
@@ -102,7 +115,12 @@ export function becodeTools(chat: Chat) {
 
       const verdict = await judgeRequest(request);
       if (!verdict.allowed) {
-        return reply({ started: false, refused: verdict.reason });
+        chat.refusal = { projectId: id, request, reason: verdict.reason, gate: "request" };
+        return reply({
+          started: false,
+          refused: verdict.reason,
+          next: `Tell the user why, plainly.${offerRequest()}`,
+        });
       }
 
       const base = await baseFor(project.path, project.baseBranch);
@@ -363,6 +381,38 @@ export function becodeTools(chat: Chat) {
     },
   );
 
+  const fileRequestTool = tool(
+    "file_request",
+    "File the request becode just refused as a Linear issue, so someone allowed to make the change " +
+      "can pick it up. Only works right after a refusal, and files exactly what was asked and why " +
+      "it was refused. The person confirms before anything is filed.",
+    {
+      title: z
+        .string()
+        .describe("Issue title, in the user's words — what they want, not why it was refused."),
+    },
+    /**
+     * The person has already approved in canUseTool (agent/sdk/session.ts). What gets filed is
+     * `chat.refusal`, recorded at the gate — the agent only names it.
+     */
+    async ({ title }) => {
+      const refusal = chat.refusal;
+      if (!refusal) throw new Error("Nothing was refused in this chat — there is nothing to file.");
+      if (!hasLinear()) throw new Error("Linear is not set up for this becode (LINEAR_API_KEY).");
+
+      const filed = await fileRequest({
+        title,
+        request: refusal.request,
+        reason: refusal.reason,
+        projectId: refusal.projectId,
+        role: rolePolicy().name,
+        teamKey: findProject(refusal.projectId).linearTeam,
+      });
+      chat.refusal = undefined;
+      return reply({ issue: filed.identifier, issueUrl: filed.url });
+    },
+  );
+
   /**
    * The branch this chat's work sits on: the parent's pushed branch while it is still on origin,
    * the project's base branch otherwise — once the parent merges, that is where its work lives.
@@ -377,7 +427,15 @@ export function becodeTools(chat: Chat) {
     instructions:
       "becode's own tools. Everything else you need — reading, searching and editing the target " +
       "repo — is a built-in tool rooted at the task worktree.",
-    tools: [listProjects, startTask, runProject, readLogs, openPullRequest, proposeProject],
+    tools: [
+      listProjects,
+      startTask,
+      runProject,
+      readLogs,
+      openPullRequest,
+      proposeProject,
+      fileRequestTool,
+    ],
   });
 }
 
@@ -723,4 +781,5 @@ export const TOOL = {
   runProject: "mcp__becode__run_project",
   openPullRequest: "mcp__becode__open_pull_request",
   proposeProject: "mcp__becode__propose_project",
+  fileRequest: "mcp__becode__file_request",
 } as const;

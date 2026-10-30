@@ -53,6 +53,23 @@ export type Chat = {
    * browser never names the branch a worktree is cut from.
    */
   parent?: Parent;
+  /**
+   * The judge's last refusal in this chat, waiting to be offered as a Linear issue.
+   *
+   * Recorded by becode at the gate, not supplied by the agent, so `file_request` files what was
+   * actually asked and the reason actually given — the agent cannot soften either, and the tool
+   * cannot be used to write anything else to Linear. Cleared once filed.
+   */
+  refusal?: Refusal;
+};
+
+/** One judge refusal: what was asked, and why becode could not do it. */
+export type Refusal = {
+  projectId: string;
+  request: string;
+  reason: string;
+  /** Which gate said no: the request (1), an edit (2), or the diff before a PR (3). */
+  gate: "request" | "change" | "diff";
 };
 
 /** One change that left the machine: the PR, and the Linear issue it was filed under. */

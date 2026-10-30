@@ -23,7 +23,7 @@ import {
 } from "../lib/task.ts";
 import { PUSH_REFUSAL, pushesUpstream } from "../lib/shell.ts";
 import { judgeChange } from "./judge.ts";
-import { becodeTools, TOOL } from "./tools.ts";
+import { becodeTools, offerRequest, TOOL } from "./tools.ts";
 import { assistantEvents, toolResultEvents } from "./transcript.ts";
 
 const MAX_TURNS = Number(process.env.BECODE_MAX_TURNS ?? 120);
@@ -427,12 +427,17 @@ export async function run({
         };
       }
       const verdict = await judgeChange(describeEdit(input, current.worktree));
-      return verdict.allowed
-        ? { behavior: "allow", updatedInput: input }
-        : {
-            behavior: "deny",
-            message: `${verdict.reason} Tell the user this, and do not try another route.`,
-          };
+      if (verdict.allowed) return { behavior: "allow", updatedInput: input };
+      chat.refusal = {
+        projectId: current.projectId,
+        request: current.request,
+        reason: verdict.reason,
+        gate: "change",
+      };
+      return {
+        behavior: "deny",
+        message: `${verdict.reason} Tell the user this, and do not try another route.${offerRequest()}`,
+      };
     }
 
     // Reading is unrestricted *inside the worktree* — and nowhere else. Without this, an absolute
@@ -445,6 +450,28 @@ export async function run({
       return verdict.allow
         ? { behavior: "allow", updatedInput: input }
         : { behavior: "deny", message: verdict.message };
+    }
+
+    // Handing a refused request to the team is an outbound write to a shared workspace, so a
+    // person says yes first. No judge: it changes nothing in any repo, and what gets filed is the
+    // refusal becode recorded, not anything the agent wrote.
+    if (toolName === TOOL.fileRequest) {
+      const refusal = chat.refusal;
+      if (!refusal) {
+        return {
+          behavior: "deny",
+          message: "Nothing was refused in this chat — there is nothing to file.",
+        };
+      }
+      const approved = await askPerson(toolUseID, emit, signal, {
+        tool: "file_request",
+        title: String(input.title ?? "File this in Linear"),
+        parameters: { request: refusal.request, reason: refusal.reason },
+        reason: "becode can't make this change. File it in Linear so someone who can picks it up?",
+      });
+      return approved
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: "The user chose not to file it. Stop here." };
     }
 
     if (toolName.startsWith("mcp__becode__")) {
@@ -704,11 +731,17 @@ async function gateOpenPullRequest(
       `Diff:\n${await diff(current.worktree)}`,
   );
   if (!verdict.allowed) {
+    chat.refusal = {
+      projectId: current.projectId,
+      request: current.request,
+      reason: verdict.reason,
+      gate: "diff",
+    };
     return {
       behavior: "deny",
       message:
         `${verdict.reason} The change stays in the worktree and does not become a pull request. ` +
-        `Tell the user what happened.`,
+        `Tell the user what happened.${offerRequest()}`,
     };
   }
 
